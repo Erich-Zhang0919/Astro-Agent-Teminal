@@ -7,7 +7,8 @@
   "packageManager": "pnpm@10.26.1",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "dev": "tsx watch src/index.ts",
+    "dev": "NODE_OPTIONS='--require ./polyfill.cjs' tsx src/agent/cli.ts",
+    "start": "node dist/agent/cli.js",
     "test": "jest",
     "test:watch": "jest --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -27,6 +28,9 @@
     "@langchain/core": "^1.1.48",
     "@langchain/langgraph": "^1.3.6",
     "@langchain/openai": "^1.4.7",
-    "langchain": "^1.4.4"
+    "dotenv": "^17.4.2",
+    "langchain": "^1.4.4",
+    "ts-node": "^10.9.2",
+    "zod": "^4.4.3"
   }
 }
