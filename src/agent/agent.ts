@@ -1,33 +1,7 @@
 import { createAgent, ReactAgent } from 'langchain'
-import { tool } from '@langchain/core/tools'
 import { ChatOpenAI } from '@langchain/openai'
 import { MemorySaver } from '@langchain/langgraph'
-import { z } from 'zod'
-import * as dotenv from 'dotenv'
-
-dotenv.config()
-
-// ── Tool Definition ──────────────────────────────────────────────
-const search = tool(
-    async ({ query }) => {
-        console.log(`\n[Tool] search called: "${query}"`)
-
-        if (
-            query.toLowerCase().includes('sf') ||
-            query.toLowerCase().includes('san francisco')
-        ) {
-            return "It's 60 degrees and foggy."
-        }
-        return "It's 90 degrees and sunny."
-    },
-    {
-        name: 'search',
-        description: 'Call to surf the web.',
-        schema: z.object({
-            query: z.string().describe('The query to use in your search.'),
-        }),
-    },
-)
+import { tools } from './tools'
 
 // ── Model ──────────────────────────────────────────────────
 const model = new ChatOpenAI({
@@ -43,7 +17,7 @@ const checkpointer = new MemorySaver()
 
 export const agent: ReactAgent = createAgent({
     model,
-    tools: [search],
+    tools,
     systemPrompt: 'You are a helpful assistant.',
     checkpointer,
 })
@@ -59,17 +33,20 @@ export async function runAgentStream(
     userMessage: string,
     onToken: (token: string) => void,
     threadId: string = 'default-session',
+    signal?: AbortSignal,
 ): Promise<string> {
     const config = { configurable: { thread_id: threadId } }
 
     const stream = await agent.stream(
         { messages: [{ role: 'user', content: userMessage }] },
-        { ...config, streamMode: 'messages' },
+        { ...config, streamMode: 'messages', signal },
     )
 
     let fullResponse = ''
 
     for await (const chunk of stream as any) {
+        if (signal?.aborted) break
+
         const message = chunk[0]
         const metadata = chunk[1]
 
