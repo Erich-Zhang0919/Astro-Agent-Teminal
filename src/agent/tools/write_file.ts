@@ -1,5 +1,6 @@
 import * as fs from 'fs/promises'
 import * as path from 'path'
+import chalk from 'chalk'
 
 export async function writeFileFn({
     file_path,
@@ -19,6 +20,6 @@ export async function writeFileFn({
     await fs.mkdir(dir, { recursive: true })
     await fs.writeFile(resolved, content, 'utf-8')
 
-    console.log(`\n[Tool] write_file called: "${file_path}"`)
+    console.log(chalk.gray(`\n[Tool] write_file called: "${file_path}"`))
     return `File written successfully: "${file_path}"`
 }

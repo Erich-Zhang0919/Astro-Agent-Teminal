@@ -1,12 +1,14 @@
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
-import { searchFn } from './search'
-import { webSearchTool } from './web_search'
-import { readFileFn } from './read_file'
-import { writeFileFn } from './write_file'
-import { execFn } from './exec'
-import { runJsFn } from './run_js'
-import { webFetchFn } from './web_fetch'
+import { searchFn } from './tools/search'
+import { webSearchTool } from './tools/web_search'
+import { readFileFn } from './tools/read_file'
+import { writeFileFn } from './tools/write_file'
+import { execFn } from './tools/exec'
+import { runJsFn } from './tools/run_js'
+import { runPyFn } from './tools/run_py'
+import { webFetchFn } from './tools/web_fetch'
+import { loadSkillFn } from './tools/load_skill'
 
 export const tools = [
     tool(searchFn, {
@@ -46,11 +48,26 @@ export const tools = [
             code: z.string().describe('The JavaScript code to execute.'),
         }),
     }),
+    tool(runPyFn, {
+        name: 'run_py',
+        description: 'Execute Python code using python3 and return the output. Returns stdout/stderr or an error message if Python 3 is not installed.',
+        schema: z.object({
+            code: z.string().describe('The Python code to execute.'),
+        }),
+    }),
     tool(webFetchFn, {
         name: 'web_fetch',
         description: 'Fetch the content of a URL (http/https). Returns the raw response body as text, or an error message if the request fails.',
         schema: z.object({
             url: z.string().describe('The full URL to fetch (must start with http:// or https://).'),
+        }),
+    }),
+    tool(loadSkillFn, {
+        name: 'load_skill',
+        description:
+            'Load the full SKILL.md instructions for ONE skill by name. Call this when a user request matches an available skill, before acting. Only one skill can be loaded per call.',
+        schema: z.object({
+            name: z.string().describe('The exact name of the skill to load.'),
         }),
     }),
 ]

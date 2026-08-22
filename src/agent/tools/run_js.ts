@@ -3,6 +3,7 @@ import { promisify } from 'util'
 import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
+import chalk from 'chalk'
 
 const execAsync = promisify(exec)
 
@@ -29,7 +30,7 @@ export async function runJsFn({ code }: { code: string }): Promise<string> {
     try {
         await fs.writeFile(tmpFile, code, 'utf-8')
         const { stdout, stderr } = await execAsync(`${_cfg.nodeCommand} "${tmpFile}"`, { timeout: 30_000 })
-        console.log(`\n[Tool] run_js called (${nodeVersion})`)
+        console.log(chalk.gray(`\n[Tool] run_js called (${nodeVersion})`))
         const parts = [stdout, stderr ? `stderr:\n${stderr}` : ''].filter(Boolean)
         return parts.join('\n') || '(no output)'
     } catch (err: any) {

@@ -2,6 +2,7 @@ import { createAgent, ReactAgent } from 'langchain'
 import { ChatOpenAI } from '@langchain/openai'
 import { MemorySaver } from '@langchain/langgraph'
 import { tools } from './tools'
+import { discoverSkills, getSkillsListText } from './skills'
 
 // ── Model ──────────────────────────────────────────────────
 const model = new ChatOpenAI({
@@ -12,13 +13,32 @@ const model = new ChatOpenAI({
     modelKwargs: { thinking: { type: 'disabled' } },  // 关闭 thinking
 })
 
+// ── Skills ────────────────────────────────────────────────────
+discoverSkills()
+
+const systemPrompt = `You are a helpful assistant.
+
+## Skills (mandatory routing)
+
+The skills listed below are REAL and available to you right now. They are NOT hypothetical.
+
+Before you do anything else for a user request — and before calling any other tool such as search/web_search/tavily_search — you MUST first check whether the request matches a skill's description below. If it matches:
+
+1. Call the \`load_skill\` tool with the skill's exact name to load its full instructions. Load at most one skill per call.
+2. Follow the loaded SKILL.md instructions to complete the task.
+
+Only fall back to general tools (web search, etc.) when NO skill matches, or when the loaded skill tells you to. Never claim a skill does not exist if it appears in the list below.
+
+Available skills:
+${getSkillsListText()}`
+
 // ── Agent & Memory ────────────────────────────────────────────
 const checkpointer = new MemorySaver()
 
 export const agent: ReactAgent = createAgent({
     model,
     tools,
-    systemPrompt: 'You are a helpful assistant.',
+    systemPrompt,
     checkpointer,
 })
 
