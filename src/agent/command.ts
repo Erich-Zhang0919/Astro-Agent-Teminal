@@ -27,7 +27,7 @@ export function buildProgram(): Command {
         .description('Send a single message to the agent and print the response')
         .option('-t, --thread <id>', 'Thread ID for conversation history', THREAD_ID)
         .action(async (message: string, opts: { thread: string }) => {
-            process.stdout.write(chalk.blue.bold('AI: '))
+            process.stdout.write(chalk.blue.bold('Astro: '))
             await runAgentStream(message, (token) => process.stdout.write(token), opts.thread)
             process.stdout.write('\n')
         })
@@ -132,7 +132,7 @@ async function startInteractiveChat(): Promise<void> {
             process.stdin.on('keypress', onKeypress)
         }
 
-        process.stdout.write(chalk.dim('\n(Press ESC to cancel)\n') + chalk.blue.bold('AI: '))
+        process.stdout.write(chalk.dim('\n(Press ESC to cancel)\n') + chalk.blue.bold('Astro: '))
 
         try {
             await runAgentStream(input, (token) => process.stdout.write(token), THREAD_ID, controller.signal)
