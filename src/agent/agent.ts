@@ -1,10 +1,8 @@
 import { createAgent, ReactAgent } from 'langchain'
 import { ChatOpenAI } from '@langchain/openai'
-import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
-import { mkdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
 import { tools } from './tools'
 import { discoverSkills, getSkillsListText } from './skills'
+import { checkpointer } from './session-store'
 
 // ── Model ──────────────────────────────────────────────────
 const model = new ChatOpenAI({
@@ -35,11 +33,6 @@ Available skills:
 ${getSkillsListText()}`
 
 // ── Agent & Memory ────────────────────────────────────────────
-const checkpointerPath = resolve(process.cwd(), '.data', 'checkpointer.db')
-mkdirSync(dirname(checkpointerPath), { recursive: true })
-
-const checkpointer = SqliteSaver.fromConnString(checkpointerPath)
-
 export const agent: ReactAgent = createAgent({
     model,
     tools,

@@ -1,13 +1,19 @@
 import { Command } from 'commander'
-import { emitKeypressEvents } from 'readline'
+import { randomUUID } from 'node:crypto'
+import { createInterface, emitKeypressEvents } from 'readline'
 import chalk from 'chalk'
 import figlet from 'figlet'
 import boxen from 'boxen'
 import { runAgentStream } from './agent'
+import {
+    ChatCommandContext,
+    ChatCommandDefinition,
+    createChatCommandRegistry,
+} from './chat-commands'
+import { sessionStore } from './session-store'
+import { promptWithSuggestions } from './chat-prompt'
 
 import pkg from '../../package.json'
-
-const THREAD_ID = 'user-session-1'
 
 export function buildProgram(): Command {
     const program = new Command()
@@ -25,7 +31,7 @@ export function buildProgram(): Command {
     program
         .command('ask <message>')
         .description('Send a single message to the agent and print the response')
-        .option('-t, --thread <id>', 'Thread ID for conversation history', THREAD_ID)
+        .option('-t, --thread <id>', 'Thread ID for conversation history', randomUUID())
         .action(async (message: string, opts: { thread: string }) => {
             process.stdout.write(chalk.blue.bold('Astro: '))
             await runAgentStream(message, (token) => process.stdout.write(token), opts.thread)
@@ -55,7 +61,7 @@ function wrapText(text: string, width: number): string[] {
     return lines
 }
 
-function printBanner(): void {
+function printBanner(chatCommands: ChatCommandDefinition[]): void {
     const displayName = pkg.name
         .split(/[-_]/)
         .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
@@ -84,10 +90,16 @@ function printBanner(): void {
         }),
     )
 
+    const commandUsageWidth = Math.max(...chatCommands.map(({ usage }) => usage.length))
     const usage = [
         chalk.bold('Commands:'),
         `  ${chalk.cyan('astro chat')}              Start an interactive chat session`,
         `  ${chalk.cyan('astro ask <message>')}     Send a single message and print the response`,
+        '',
+        chalk.bold('Chat commands:'),
+        ...chatCommands.map(({ usage, description }) =>
+            `  ${chalk.cyan(usage.padEnd(commandUsageWidth))}  ${description}`,
+        ),
         '',
         `  ${chalk.yellow.bold('ESC')}    Cancel the current AI request`,
         `  ${chalk.green.bold('exit')}   Quit the console`,
@@ -97,28 +109,45 @@ function printBanner(): void {
 }
 
 async function startInteractiveChat(): Promise<void> {
-    const { createInterface } = await import('readline')
+    const session = { threadId: randomUUID() }
+    const chatCommands = createChatCommandRegistry({
+        listRecentSessions: (limit) => sessionStore.listRecentSessions(limit),
+        sessionExists: (threadId) => sessionStore.hasSession(threadId),
+    })
+    const commandContext: ChatCommandContext = {
+        session,
+        writeLine: (message, level = 'info') => {
+            console.log(level === 'error' ? chalk.red(message) : chalk.cyan(message))
+        },
+    }
+    const isTTY = Boolean(process.stdin.isTTY)
+    const fallbackInterface = isTTY
+        ? undefined
+        : createInterface({ input: process.stdin, output: process.stdout })
+    const prompt = () => isTTY
+        ? promptWithSuggestions(chatCommands)
+        : new Promise<string>((resolve) => fallbackInterface?.question('You: ', resolve))
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout })
-    const prompt = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve))
+    if (isTTY) emitKeypressEvents(process.stdin)
 
-    emitKeypressEvents(process.stdin)
-
-    printBanner()
+    printBanner(chatCommands.list())
 
     while (true) {
-        const input = await prompt(chalk.green.bold('You: '))
+        const input = await prompt()
         if (!input.trim()) continue
-        if (input.toLowerCase() === 'exit') {
+        if (isTTY) process.stdout.write(`${chalk.green.bold('You: ')}${input}\n`)
+        if (input.trim().toLowerCase() === 'exit') {
             console.log(chalk.gray('Goodbye!'))
-            rl.close()
+            fallbackInterface?.close()
             break
         }
+        if (await chatCommands.dispatch(input, commandContext)) {
+            continue
+        }
 
-        rl.pause()
+        fallbackInterface?.pause()
 
         const controller = new AbortController()
-        const isTTY = process.stdin.isTTY
 
         const onKeypress = (_str: string | undefined, key: { name: string }) => {
             if (key?.name === 'escape') {
@@ -135,7 +164,7 @@ async function startInteractiveChat(): Promise<void> {
         process.stdout.write(chalk.dim('\n(Press ESC to cancel)\n') + chalk.blue.bold('Astro: '))
 
         try {
-            await runAgentStream(input, (token) => process.stdout.write(token), THREAD_ID, controller.signal)
+            await runAgentStream(input, (token) => process.stdout.write(token), session.threadId, controller.signal)
             if (controller.signal.aborted) {
                 process.stdout.write(chalk.yellow('\n[Cancelled]'))
             }
@@ -153,6 +182,6 @@ async function startInteractiveChat(): Promise<void> {
         }
 
         process.stdout.write('\n\n')
-        rl.resume()
+        fallbackInterface?.resume()
     }
 }
