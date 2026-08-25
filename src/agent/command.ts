@@ -12,6 +12,7 @@ import {
 } from './chat-commands'
 import { sessionStore } from './session-store'
 import { promptWithSuggestions } from './chat-prompt'
+import { formatContextUsage } from './context-usage'
 
 import pkg from '../../package.json'
 
@@ -34,8 +35,12 @@ export function buildProgram(): Command {
         .option('-t, --thread <id>', 'Thread ID for conversation history', randomUUID())
         .action(async (message: string, opts: { thread: string }) => {
             process.stdout.write(chalk.blue.bold('Astro: '))
-            await runAgentStream(message, (token) => process.stdout.write(token), opts.thread)
-            process.stdout.write('\n')
+            const result = await runAgentStream(
+                message,
+                (token) => process.stdout.write(token),
+                opts.thread,
+            )
+            process.stdout.write(`\n${chalk.dim(formatContextUsage(result))}\n`)
         })
 
     return program
@@ -164,9 +169,16 @@ async function startInteractiveChat(): Promise<void> {
         process.stdout.write(chalk.dim('\n(Press ESC to cancel)\n') + chalk.blue.bold('Astro: '))
 
         try {
-            await runAgentStream(input, (token) => process.stdout.write(token), session.threadId, controller.signal)
+            const result = await runAgentStream(
+                input,
+                (token) => process.stdout.write(token),
+                session.threadId,
+                controller.signal,
+            )
             if (controller.signal.aborted) {
                 process.stdout.write(chalk.yellow('\n[Cancelled]'))
+            } else {
+                process.stdout.write(`\n${chalk.dim(formatContextUsage(result))}`)
             }
         } catch (err) {
             if (!controller.signal.aborted) {

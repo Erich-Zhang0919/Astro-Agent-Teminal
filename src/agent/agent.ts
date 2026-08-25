@@ -3,13 +3,19 @@ import { ChatOpenAI } from '@langchain/openai'
 import { tools } from './tools'
 import { discoverSkills, getSkillsListText } from './skills'
 import { checkpointer } from './session-store'
+import { AgentRunResult, collectAgentStream } from './context-usage'
+import { getModelContextWindow } from './model-metadata'
 
 // ── Model ──────────────────────────────────────────────────
+const MODEL_ID = 'kimi-k2.6'
+const API_BASE_URL = 'https://api.moonshot.cn/v1'
+
 const model = new ChatOpenAI({
-    model: 'kimi-k2.6',
+    model: MODEL_ID,
     apiKey: process.env.MOONSHOT_API_KEY,
-    configuration: { baseURL: 'https://api.moonshot.cn/v1' },
+    configuration: { baseURL: API_BASE_URL },
     streaming: true,
+    streamUsage: true,
     modelKwargs: { thinking: { type: 'disabled' } },  // 关闭 thinking
 })
 
@@ -45,40 +51,40 @@ export const agent: ReactAgent = createAgent({
  * @param {string} userMessage - 当前用户输入（历史已由 checkpointer 自动续接）
  * @param {Function} onToken   - 每个 token 到来时的回调 (token: string) => void
  * @param {string} threadId    - 会话 ID，相同 ID 自动续上历史记录
- * @returns {Promise<string>}  完整的 AI 回复文本
+ * @returns {Promise<AgentRunResult>} 完整回复及最后一次模型调用的 context 信息
  */
 export async function runAgentStream(
     userMessage: string,
     onToken: (token: string) => void,
     threadId: string = 'default-session',
     signal?: AbortSignal,
-): Promise<string> {
+): Promise<AgentRunResult> {
     const config = { configurable: { thread_id: threadId } }
+    const configuredContextWindow = getModelContextWindow(MODEL_ID, {
+        apiKey: process.env.MOONSHOT_API_KEY,
+        baseUrl: API_BASE_URL,
+    })
 
     const stream = await agent.stream(
         { messages: [{ role: 'user', content: userMessage }] },
         { ...config, streamMode: 'messages', signal },
     )
 
-    let fullResponse = ''
+    const result = await collectAgentStream(
+        stream as AsyncIterable<unknown>,
+        onToken,
+        MODEL_ID,
+        signal,
+    )
 
-    for await (const chunk of stream as any) {
-        if (signal?.aborted) break
+    if (signal?.aborted) return result
 
-        const message = chunk[0]
-        const metadata = chunk[1]
+    const contextWindow = result.modelId === MODEL_ID
+        ? await configuredContextWindow
+        : await getModelContextWindow(result.modelId, {
+            apiKey: process.env.MOONSHOT_API_KEY,
+            baseUrl: API_BASE_URL,
+        })
 
-        if (metadata?.langgraph_node !== 'model_request') continue
-
-        // AIMessageChunk 的 content 在 message.content 属性上，不在 kwargs.content
-        const content: string = (message as any).content ?? (message as any).kwargs?.content ?? ''
-        const toolCallChunks = (message as any).tool_call_chunks ?? []
-
-        if (!content || toolCallChunks.length > 0) continue
-
-        onToken(content)
-        fullResponse += content
-    }
-
-    return fullResponse
+    return { ...result, contextWindow }
 }
