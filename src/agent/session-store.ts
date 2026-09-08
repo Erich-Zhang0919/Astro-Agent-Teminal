@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import type { BaseMessage } from '@langchain/core/messages'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
 
 export interface SessionSummary {
@@ -29,6 +30,19 @@ export class SessionStore {
         })
 
         return checkpoint !== undefined
+    }
+
+    async getMessages(threadId: string): Promise<BaseMessage[]> {
+        if (!threadId) return []
+
+        const checkpoint = await this.checkpointer.getTuple({
+            configurable: {
+                thread_id: threadId,
+                checkpoint_ns: '',
+            },
+        })
+        const messages = checkpoint?.checkpoint.channel_values.messages
+        return Array.isArray(messages) ? [...messages] as BaseMessage[] : []
     }
 
     async listRecentSessions(limit: number): Promise<SessionSummary[]> {

@@ -4,15 +4,16 @@ import { createInterface, emitKeypressEvents } from 'readline'
 import chalk from 'chalk'
 import figlet from 'figlet'
 import boxen from 'boxen'
-import { runAgentStream } from './agent'
+import { compactAgentContext, runAgentStream } from './agent'
 import {
     ChatCommandContext,
     ChatCommandDefinition,
     createChatCommandRegistry,
+    runContextCompaction,
 } from './chat-commands'
 import { sessionStore } from './session-store'
 import { promptWithSuggestions } from './chat-prompt'
-import { formatContextUsage } from './context-usage'
+import { formatContextUsage, shouldAutoCompact } from './context-usage'
 
 import pkg from '../../package.json'
 
@@ -118,6 +119,7 @@ async function startInteractiveChat(): Promise<void> {
     const chatCommands = createChatCommandRegistry({
         listRecentSessions: (limit) => sessionStore.listRecentSessions(limit),
         sessionExists: (threadId) => sessionStore.hasSession(threadId),
+        compactContext: compactAgentContext,
     })
     const commandContext: ChatCommandContext = {
         session,
@@ -179,6 +181,15 @@ async function startInteractiveChat(): Promise<void> {
                 process.stdout.write(chalk.yellow('\n[Cancelled]'))
             } else {
                 process.stdout.write(`\n${chalk.dim(formatContextUsage(result))}`)
+                if (shouldAutoCompact(result)) {
+                    process.stdout.write('\n')
+                    await runContextCompaction(
+                        session.threadId,
+                        compactAgentContext,
+                        commandContext.writeLine,
+                        'Context usage reached 80%. Starting automatic compaction…',
+                    )
+                }
             }
         } catch (err) {
             if (!controller.signal.aborted) {

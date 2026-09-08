@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import Table from 'cli-table3'
 import stringWidth from 'string-width'
 import type { SessionSummary } from './session-store'
+import type { ContextCompactionResult } from './context-usage'
 
 export interface ChatSessionState {
     threadId: string
@@ -24,6 +25,7 @@ export interface ChatCommandDefinition {
 export interface ChatCommandDependencies {
     listRecentSessions: (limit: number) => Promise<SessionSummary[]>
     sessionExists: (threadId: string) => Promise<boolean>
+    compactContext: (threadId: string) => Promise<ContextCompactionResult>
     createThreadId?: () => string
     now?: () => Date
 }
@@ -80,6 +82,7 @@ export class ChatCommandRegistry {
 export function createChatCommandRegistry({
     listRecentSessions,
     sessionExists,
+    compactContext,
     createThreadId = randomUUID,
     now = () => new Date(),
 }: ChatCommandDependencies): ChatCommandRegistry {
@@ -97,6 +100,23 @@ export function createChatCommandRegistry({
                 const threadId = createThreadId()
                 context.session.threadId = threadId
                 context.writeLine(`New session started: ${threadId}`)
+            },
+        })
+        .register({
+            name: 'compact',
+            description: 'Compact the current chat context',
+            usage: '/compact',
+            execute: async (rawArgs, context) => {
+                if (rawArgs) {
+                    context.writeLine('Usage: /compact', 'error')
+                    return
+                }
+
+                await runContextCompaction(
+                    context.session.threadId,
+                    compactContext,
+                    context.writeLine,
+                )
             },
         })
         .register({
@@ -137,6 +157,41 @@ export function createChatCommandRegistry({
                 context.writeLine(`Session restored: ${rawArgs}`)
             },
         })
+}
+
+export async function runContextCompaction(
+    threadId: string,
+    compact: (threadId: string) => Promise<ContextCompactionResult>,
+    writeLine: ChatCommandContext['writeLine'],
+    announcement = 'Compacting context…',
+): Promise<void> {
+    writeLine(announcement)
+
+    try {
+        const result = await compact(threadId)
+        if (result.status === 'nothing_to_compact') {
+            writeLine('Nothing to compact: at least the 6 most recent messages are kept in full.')
+            return
+        }
+
+        const count = result.record.compactionCount
+        writeLine(
+            `Context compacted: ${result.newlyCompactedMessageCount} messages summarized ` +
+            `(total compactions: ${count}). The summary will be used in the next AI turn.`,
+        )
+        if (count >= 3) {
+            writeLine(
+                `⚠ Context has been compacted ${count} times. ` +
+                'Strongly recommended: use /new to start a fresh session.',
+            )
+        }
+    } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        writeLine(
+            `Context compaction failed: ${message}. The existing context remains active.`,
+            'error',
+        )
+    }
 }
 
 export function formatSessionsTable(sessions: SessionSummary[], now: Date): string {
