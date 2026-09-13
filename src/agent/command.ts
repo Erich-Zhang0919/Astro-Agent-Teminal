@@ -13,7 +13,7 @@ import {
 } from './chat-commands'
 import { sessionStore } from './session-store'
 import { promptWithSuggestions } from './chat-prompt'
-import { formatContextUsage, shouldAutoCompact } from './context-usage'
+import { AgentRunResult, formatContextUsage, shouldAutoCompact, shouldWarnContextUsage } from './context-usage'
 
 import pkg from '../../package.json'
 
@@ -41,7 +41,8 @@ export function buildProgram(): Command {
                 (token) => process.stdout.write(token),
                 opts.thread,
             )
-            process.stdout.write(`\n${chalk.dim(formatContextUsage(result))}\n`)
+            await reportContextUsage(result, opts.thread)
+            process.stdout.write('\n')
         })
 
     return program
@@ -49,6 +50,25 @@ export function buildProgram(): Command {
 
 const INFO_LABEL_WIDTH = 'Description'.length
 const INFO_VALUE_WIDTH = 50
+
+async function reportContextUsage(result: AgentRunResult, threadId: string): Promise<void> {
+    process.stdout.write(`\n${chalk.dim(formatContextUsage(result))}`)
+    if (shouldWarnContextUsage(result)) {
+        process.stdout.write('\n' + chalk.yellow(
+            `[Tips]当前上下文即将达到上限，建议使用 ${chalk.bold('/new')} 开启新会话，` +
+            `或使用 ${chalk.bold('/compact')} 压缩上下文。`,
+        ))
+    }
+    if (shouldAutoCompact(result)) {
+        process.stdout.write('\n')
+        await runContextCompaction(
+            threadId,
+            compactAgentContext,
+            (message, level) => console.log(level === 'error' ? chalk.red(message) : chalk.cyan(message)),
+            'Context usage reached 90%. Starting automatic compaction…',
+        )
+    }
+}
 
 function wrapText(text: string, width: number): string[] {
     const words = text.split(' ')
@@ -180,16 +200,7 @@ async function startInteractiveChat(): Promise<void> {
             if (controller.signal.aborted) {
                 process.stdout.write(chalk.yellow('\n[Cancelled]'))
             } else {
-                process.stdout.write(`\n${chalk.dim(formatContextUsage(result))}`)
-                if (shouldAutoCompact(result)) {
-                    process.stdout.write('\n')
-                    await runContextCompaction(
-                        session.threadId,
-                        compactAgentContext,
-                        commandContext.writeLine,
-                        'Context usage reached 80%. Starting automatic compaction…',
-                    )
-                }
+                await reportContextUsage(result, session.threadId)
             }
         } catch (err) {
             if (!controller.signal.aborted) {

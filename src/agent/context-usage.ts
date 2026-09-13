@@ -43,7 +43,8 @@ export type ContextCompactionResult =
         cacheWasInvalidated: boolean
     }
 
-export const AUTO_COMPACTION_THRESHOLD = 0.8
+export const CONTEXT_WARNING_THRESHOLD = 0.8
+export const AUTO_COMPACTION_THRESHOLD = 0.9
 export const RECENT_MESSAGES_TO_KEEP = 6
 
 const COMPACTION_SYSTEM_PROMPT = `You maintain a compact memory of an ongoing conversation.
@@ -144,12 +145,20 @@ export function formatContextUsage(result: AgentRunResult): string {
 }
 
 export function shouldAutoCompact(result: AgentRunResult): boolean {
+    return isContextUsageAtLeast(result, AUTO_COMPACTION_THRESHOLD)
+}
+
+export function shouldWarnContextUsage(result: AgentRunResult): boolean {
+    return isContextUsageAtLeast(result, CONTEXT_WARNING_THRESHOLD)
+}
+
+function isContextUsageAtLeast(result: AgentRunResult, threshold: number): boolean {
     const total = result.usage?.totalTokens
     const limit = validContextWindow(result.contextWindow)
         ? result.contextWindow
         : undefined
 
-    return total !== undefined && limit !== undefined && total / limit >= AUTO_COMPACTION_THRESHOLD
+    return total !== undefined && limit !== undefined && total / limit >= threshold
 }
 
 export async function compactContext(
