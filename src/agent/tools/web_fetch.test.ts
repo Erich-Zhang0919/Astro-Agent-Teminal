@@ -24,7 +24,7 @@ describe('webFetchFn', () => {
         )
     })
 
-    it('truncates responses longer than 50 000 chars', async () => {
+    it('returns the full response when it exceeds 50 000 chars', async () => {
         const longContent = 'x'.repeat(60_000)
         mockFetch.mockResolvedValueOnce({
             ok: true,
@@ -34,8 +34,7 @@ describe('webFetchFn', () => {
         })
 
         const result = await webFetchFn({ url: 'https://example.com' })
-        expect(result).toHaveLength(50_000 + '\n...(truncated)'.length)
-        expect(result).toMatch(/\.\.\.\(truncated\)$/)
+        expect(result).toBe(longContent)
     })
 
     it('returns error message on HTTP error status', async () => {

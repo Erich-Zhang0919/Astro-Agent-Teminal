@@ -1,8 +1,4 @@
-import chalk from 'chalk'
-
 export async function searchFn({ query }: { query: string }): Promise<string> {
-    console.log(chalk.gray(`\n[Tool] search called: "${query}"`))
-
     if (
         query.toLowerCase().includes('sf') ||
         query.toLowerCase().includes('san francisco')

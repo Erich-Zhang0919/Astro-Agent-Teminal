@@ -1,6 +1,5 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
-import chalk from 'chalk'
 
 const execAsync = promisify(exec)
 
@@ -36,7 +35,6 @@ export async function execFn({ command }: { command: string }): Promise<string> 
 
     try {
         const { stdout, stderr } = await execAsync(command, { cwd, timeout: 30_000 })
-        console.log(chalk.gray(`\n[Tool] exec called: "${command}"`))
         const parts = [stdout, stderr ? `stderr:\n${stderr}` : ''].filter(Boolean)
         return parts.join('\n') || '(no output)'
     } catch (err: any) {

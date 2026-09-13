@@ -1,3 +1,4 @@
+import * as fs from 'fs/promises'
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 import { searchFn } from './tools/search'
@@ -9,6 +10,24 @@ import { runJsFn } from './tools/run_js'
 import { runPyFn } from './tools/run_py'
 import { webFetchFn } from './tools/web_fetch'
 import { loadSkillFn } from './tools/load_skill'
+
+export async function maybePersistedOutput(content: string, toolCallId: string): Promise<string> {
+    if (content.length <= 50_000) return content
+
+    const filePath = `./tool_output/tool_output_${encodeURIComponent(toolCallId)}.txt`
+    await fs.mkdir('./tool_output', { recursive: true })
+    await fs.writeFile(filePath, content, 'utf-8')
+
+    return `<persisted-output>
+Output too large (${(content.length / 1024).toFixed(1)}KB).
+Full output saved to: ${filePath}
+If you need the complete content, it is recommended to read it in segments
+
+Preview (first 2KB):
+${content.slice(0, 2000)}
+...
+</persisted-output>`
+}
 
 export const tools = [
     tool(searchFn, {

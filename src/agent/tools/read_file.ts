@@ -1,6 +1,5 @@
 import * as fs from 'fs/promises'
 import * as path from 'path'
-import chalk from 'chalk'
 
 export async function readFileFn({ file_path }: { file_path: string }): Promise<string> {
     const cwd = process.cwd()
@@ -13,7 +12,6 @@ export async function readFileFn({ file_path }: { file_path: string }): Promise<
 
     try {
         const content = await fs.readFile(resolved, 'utf-8')
-        console.log(chalk.gray(`\n[Tool] read_file called: "${file_path}"`))
         return content
     } catch (err: any) {
         if (err.code === 'ENOENT') {

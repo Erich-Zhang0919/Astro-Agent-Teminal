@@ -17,6 +17,10 @@ describe('ChatCommandRegistry', () => {
         createChatCommandRegistry({
             listRecentSessions: async () => [],
             sessionExists: async () => false,
+            compactContext: async () => ({
+                status: 'nothing_to_compact',
+                cacheWasInvalidated: false,
+            }),
             createThreadId: () => 'new-thread',
             now: () => new Date('2026-08-23T12:00:00.000Z'),
             ...overrides,
@@ -35,6 +39,7 @@ describe('ChatCommandRegistry', () => {
 
         expect(registry.suggest('/').map(({ name }) => name)).toEqual([
             'new',
+            'compact',
             'sessions',
             'rewind',
         ])
@@ -85,7 +90,7 @@ describe('ChatCommandRegistry', () => {
 
         await expect(registry.dispatch('/missing', context)).resolves.toBe(true)
         expect(writeLine).toHaveBeenCalledWith(
-            'Unknown command: /missing. Available commands: /new, /sessions, /rewind',
+            'Unknown command: /missing. Available commands: /new, /compact, /sessions, /rewind',
             'error',
         )
     })
@@ -164,7 +169,7 @@ describe('ChatCommandRegistry', () => {
         expect(listRecentSessions).toHaveBeenCalledWith(20)
         const output = writeLine.mock.calls[0][0] as string
         expect(output).toContain('┌')
-        expect(output).toContain('thread_id')
+        expect(output).toContain('Thread_id')
         expect(output).toContain('11111111-1111-4111-8111-111111111111')
         expect(output).toContain('22222222-2222-4222-8222-222222222222')
         expect(output.match(/你/g)).toHaveLength(50)

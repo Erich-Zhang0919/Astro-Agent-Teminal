@@ -1,7 +1,3 @@
-import chalk from 'chalk'
-
-const MAX_CONTENT_LENGTH = 50_000
-
 export async function webFetchFn({ url }: { url: string }): Promise<string> {
     let parsed: URL
     try {
@@ -29,9 +25,7 @@ export async function webFetchFn({ url }: { url: string }): Promise<string> {
     }
 
     try {
-        const text = await response.text()
-        console.log(chalk.gray(`\n[Tool] web_fetch called: "${url}" (${text.length} chars)`))
-        return text.length > MAX_CONTENT_LENGTH ? text.slice(0, MAX_CONTENT_LENGTH) + '\n...(truncated)' : text
+        return await response.text()
     } catch (err: any) {
         return `Error: failed to read response body — ${err.message}`
     }

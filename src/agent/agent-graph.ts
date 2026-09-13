@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto'
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import {
     BaseMessage,
+    isAIMessage,
     SystemMessage,
+    ToolMessage,
 } from '@langchain/core/messages'
 import {
     BaseCheckpointSaver,
@@ -16,6 +18,7 @@ import {
 } from '@langchain/langgraph'
 import type * as LangGraphPrebuilt from '@langchain/langgraph/dist/prebuilt'
 import { z } from 'zod'
+import { maybePersistedOutput } from './tools'
 
 // The package exports this subpath at runtime, but the project's legacy
 // `moduleResolution: node` setting cannot discover its conditional types entry.
@@ -104,10 +107,34 @@ export function createAgentGraph({
         return { messages: [response] }
     }
 
+    const toolExecutor = new ToolNode(tools)
+    const toolNode: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
+        const lastMessage = state.messages[state.messages.length - 1]
+        if (lastMessage && isAIMessage(lastMessage)) {
+            for (const toolCall of lastMessage.tool_calls ?? []) {
+                console.log(toolCall.name)
+            }
+        }
+        const result = await toolExecutor.invoke(state, config)
+        // ToolNode returns message updates, or a mixture of updates and Commands.
+        const updates: unknown[] = Array.isArray(result) ? result : [result]
+        for (const update of updates) {
+            if (!update || typeof update !== 'object' || !('messages' in update) ||
+                !Array.isArray(update.messages)) continue
+
+            await Promise.all(update.messages.map(async (message: unknown) => {
+                if (ToolMessage.isInstance(message) && typeof message.content === 'string') {
+                    message.content = await maybePersistedOutput(message.content, message.tool_call_id)
+                }
+            }))
+        }
+        return result
+    }
+
     return new StateGraph(AgentState, AgentContext)
         .addNode('preprocess', preprocess)
         .addNode('model_request', callModel)
-        .addNode('tools', new ToolNode(tools))
+        .addNode('tools', toolNode)
         .addEdge(START, 'preprocess')
         .addEdge('preprocess', 'model_request')
         .addConditionalEdges('model_request', toolsCondition, ['tools', END])
