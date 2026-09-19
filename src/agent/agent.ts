@@ -59,7 +59,15 @@ Before you do anything else for a user request — and before calling any other 
 Only fall back to general tools (web search, etc.) when NO skill matches, or when the loaded skill tells you to. Never claim a skill does not exist if it appears in the list below.
 
 Available skills:
-${getSkillsListText()}`
+${getSkillsListText()}
+
+## Long-term memory
+
+Follow the mandatory skill routing above before calling memory tools.
+Call \`memory_create_tool\` when the user explicitly asks you to remember something, and proactively when user-provided facts, preferences, events, or skills will be useful in future conversations.
+Save one independent memory per call, with a concise natural-language description, relevant keywords, and an importance from 1 to 5 (default 3).
+Do not save guesses, temporary questions, or the same memory already saved successfully in the current context.
+Only tell the user a memory has been saved after the tool succeeds.`
 
 // ── Agent & Memory ────────────────────────────────────────────
 export const agent = createAgentGraph({

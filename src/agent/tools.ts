@@ -5,6 +5,7 @@ import { searchFn } from './tools/search'
 import { webSearchTool } from './tools/web_search'
 import { readFileFn } from './tools/read_file'
 import { writeFileFn } from './tools/write_file'
+import { memoryCreateFn } from './tools/memory_create'
 import { execFn } from './tools/exec'
 import { runJsFn } from './tools/run_js'
 import { runPyFn } from './tools/run_py'
@@ -51,6 +52,25 @@ export const tools = [
         schema: z.object({
             file_path: z.string().describe('Relative path to the file from the current working directory.'),
             content: z.string().describe('The content to write into the file.'),
+        }),
+    }),
+    tool(memoryCreateFn, {
+        name: 'memory_create_tool',
+        description:
+            'Save one independent long-term memory when the user asks you to remember something, ' +
+            'or proactively when user-provided facts, preferences, events, or skills will help future conversations. ' +
+            'Do not save guesses, temporary questions, or the same memory already saved successfully in the current context. ' +
+            'Follow mandatory skill routing first. Only tell the user a memory was saved after this tool succeeds. ' +
+            'The current session is attached automatically.',
+        schema: z.object({
+            type: z.enum(['fact', 'event', 'preference', 'skill'])
+                .describe('The kind of memory to save.'),
+            content: z.string().trim().min(1)
+                .describe('One independent memory in natural language, grounded in information provided by the user.'),
+            keywords: z.array(z.string()).default([])
+                .describe('Keywords for retrieving this memory.'),
+            importance: z.number().int().min(1).max(5).default(3)
+                .describe('Long-term importance from 1 (low) to 5 (high), default 3.'),
         }),
     }),
     tool(execFn, {

@@ -1,7 +1,8 @@
-import { mkdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
 import type { BaseMessage } from '@langchain/core/messages'
-import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
+import type { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
+import { checkpointer } from './db'
+
+export { checkpointer, DB_PATH as checkpointerPath } from './db'
 
 export interface SessionSummary {
     threadId: string
@@ -103,8 +104,4 @@ function getMessageText(content: unknown): string {
         .join(' ')
 }
 
-export const checkpointerPath = resolve(process.cwd(), '.data', 'checkpointer.db')
-mkdirSync(dirname(checkpointerPath), { recursive: true })
-
-export const checkpointer = SqliteSaver.fromConnString(checkpointerPath)
 export const sessionStore = new SessionStore(checkpointer)
