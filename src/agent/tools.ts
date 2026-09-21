@@ -7,6 +7,7 @@ import { readFileFn } from './tools/read_file'
 import { writeFileFn } from './tools/write_file'
 import { memoryCreateFn } from './tools/memory_create'
 import { memoryRetrieveFn } from './tools/memory_retrieve'
+import { memoryDeleteFn } from './tools/memory_delete'
 import { execFn } from './tools/exec'
 import { runJsFn } from './tools/run_js'
 import { runPyFn } from './tools/run_py'
@@ -84,6 +85,18 @@ export const tools = [
         schema: z.object({
             keywords: z.array(z.string().trim().min(1)).min(1).max(10)
                 .describe('One to ten concise keywords extracted from the user question.'),
+        }),
+    }),
+    tool(memoryDeleteFn, {
+        name: 'memory_delete_tool',
+        description:
+            'Permanently delete one long-term memory when the user explicitly asks to forget or delete it. ' +
+            'Use the exact memory id from the current context or memory_retrieve_tool results. ' +
+            'If multiple memories could match the request, ask the user which one to delete before calling this tool. ' +
+            'The corresponding full-text index entry is deleted automatically.',
+        schema: z.object({
+            id: z.number().int().positive()
+                .describe('The exact id of the memory to delete.'),
         }),
     }),
     tool(execFn, {
