@@ -13,6 +13,7 @@ import { runJsFn } from './tools/run_js'
 import { runPyFn } from './tools/run_py'
 import { webFetchFn } from './tools/web_fetch'
 import { loadSkillFn } from './tools/load_skill'
+import { profileUpdateFn } from './tools/profile_update'
 
 export async function maybePersistedOutput(content: string, toolCallId: string): Promise<string> {
     if (content.length <= 50_000) return content
@@ -54,6 +55,17 @@ export const tools = [
         schema: z.object({
             file_path: z.string().describe('Relative path to the file from the current working directory.'),
             content: z.string().describe('The content to write into the file.'),
+        }),
+    }),
+    tool(profileUpdateFn, {
+        name: 'profile_update_tool',
+        description:
+            'Record information about the user that falls within <profile_template>. ' +
+            'When updating the profile, provide the complete updated profile: preserve all still-valid information from <profile_info>, ' +
+            'merge the new or changed information, and never submit only the changed fields.',
+        schema: z.object({
+            profile: z.string().trim().min(1)
+                .describe('The complete updated user profile, including all unchanged and newly added or changed information.'),
         }),
     }),
     tool(memoryCreateFn, {

@@ -8,4 +8,5 @@ coverage/
 .env.*.local
 .agents
 .data/
+/data/
 /tool_output/
