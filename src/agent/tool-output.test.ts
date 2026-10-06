@@ -103,8 +103,21 @@ function setupGraph(tools: CreateAgentGraphOptions['tools']) {
         systemPrompt: 'test',
         checkpointer: new MemorySaver(),
     })
-    const logSpy = jest.spyOn(console, 'log').mockImplementation(() => {})
-    return { graph, invoke, logSpy }
+    return { graph, invoke }
+}
+
+async function invokeWithApprovals(
+    graph: ReturnType<typeof setupGraph>['graph'],
+    config: { configurable: { thread_id: string } },
+    count: number,
+) {
+    let result = await graph.invoke({ messages: [new HumanMessage('run tools')] }, config)
+    for (let index = 0; index < count; index += 1) {
+        const snapshot = await graph.getState(config)
+        expect(snapshot.tasks.flatMap((task) => task.interrupts)).toHaveLength(1)
+        result = await graph.invoke(new Command({ resume: { approved: true } }), config)
+    }
+    return result
 }
 
 describe('toolNode output persistence', () => {
@@ -123,7 +136,7 @@ describe('toolNode output persistence', () => {
             response_metadata: { elapsed: 2 },
         })
         const blocks = [{ type: 'text' as const, text: 'structured'.repeat(10_000) }]
-        const { graph, invoke, logSpy } = setupGraph([
+        const { graph, invoke } = setupGraph([
             tool(() => detailedMessage, { name: 'first', schema: z.object({}) }),
             tool(() => secondContent, { name: 'second', schema: z.object({}) }),
             tool(() => 'short', { name: 'short', schema: z.object({}) }),
@@ -132,7 +145,7 @@ describe('toolNode output persistence', () => {
             }),
         ])
         const config = { configurable: { thread_id: 'multiple' } }
-        const result = await graph.invoke({ messages: [new HumanMessage('run tools')] }, config)
+        const result = await invokeWithApprovals(graph, config, 4)
         const messages = result.messages.filter((message) => ToolMessage.isInstance(message))
 
         expect(messages.map((message) => message.tool_call_id)).toEqual([
@@ -164,7 +177,6 @@ describe('toolNode output persistence', () => {
             response_metadata: message.response_metadata,
         })
         expect(savedMessages.map(messageFields)).toEqual(messages.map(messageFields))
-        expect(logSpy.mock.calls).toEqual([['first'], ['second'], ['short'], ['blocks']])
     })
 
     it('keeps Command results intact while processing accompanying message updates', async () => {
@@ -175,9 +187,9 @@ describe('toolNode output persistence', () => {
             tool(() => 'x'.repeat(50_001), { name: 'long', schema: z.object({}) }),
         ])
 
-        const result = await graph.invoke({ messages: [new HumanMessage('run tools')] }, {
+        const result = await invokeWithApprovals(graph, {
             configurable: { thread_id: 'command' },
-        })
+        }, 2)
         const messages = result.messages.filter((message) => ToolMessage.isInstance(message))
         expect(messages[0].content).toBe('command result')
         expect(messages[1].content).toContain('<persisted-output>')
@@ -190,9 +202,10 @@ describe('toolNode output persistence', () => {
             tool(() => 'x'.repeat(50_001), { name: 'failure', schema: z.object({}) }),
         ])
 
-        await expect(graph.invoke({ messages: [new HumanMessage('run tools')] }, {
-            configurable: { thread_id: 'failure' },
-        })).rejects.toMatchObject({ code: 'EISDIR' })
+        const config = { configurable: { thread_id: 'failure' } }
+        await graph.invoke({ messages: [new HumanMessage('run tools')] }, config)
+        await expect(graph.invoke(new Command({ resume: { approved: true } }), config))
+            .rejects.toMatchObject({ code: 'EISDIR' })
         expect(invoke).toHaveBeenCalledTimes(1)
     })
 })

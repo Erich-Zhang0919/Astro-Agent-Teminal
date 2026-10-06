@@ -5,19 +5,20 @@ import {
     AgentRunResult,
     ContextCompactionResult,
     applyCompactedContext,
-    collectAgentStream,
     compactContext,
     isCompactionRecordValidForMessages,
 } from './context-usage'
 import { getModelContextWindow } from './model-metadata'
-import { createAgentGraph, HistoryPreprocessor } from './agent-graph'
+import { createAgentGraph, HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
 import { ContextCompactionStore } from './context-compaction-store'
 import { systemPrompt } from './prompt'
+import { runGraphWithApprovals } from './agent-runner'
 
-export { HistoryPreprocessor } from './agent-graph'
+export { HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
 
 export interface RunAgentOptions {
     preprocessMessages?: HistoryPreprocessor
+    confirmTool?: (request: ToolApprovalRequest) => Promise<boolean>
 }
 
 // ── Model ──────────────────────────────────────────────────
@@ -104,25 +105,16 @@ export async function runAgentStream(
         configurable: { thread_id: threadId },
         context: { preprocessMessages },
     }
-    const configuredContextWindow = getModelContextWindow(MODEL_ID, {
-        apiKey: process.env.MOONSHOT_API_KEY,
-        baseUrl: API_BASE_URL,
-    })
-
-    const stream = await agent.stream(
-        { messages: [{ role: 'user', content: userMessage }] },
-        { ...config, streamMode: 'messages', signal },
-    )
-
-    const result = await collectAgentStream(
-        stream as AsyncIterable<unknown>,
-        onToken,
-        MODEL_ID,
-        signal,
+    const result = await runGraphWithApprovals(
+        agent, userMessage, onToken, config, MODEL_ID, signal, options.confirmTool,
     )
 
     if (signal?.aborted) return result
 
+    const configuredContextWindow = getModelContextWindow(MODEL_ID, {
+        apiKey: process.env.MOONSHOT_API_KEY,
+        baseUrl: API_BASE_URL,
+    })
     const contextWindow = result.modelId === MODEL_ID
         ? await configuredContextWindow
         : await getModelContextWindow(result.modelId, {

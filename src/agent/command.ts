@@ -14,6 +14,7 @@ import {
 import { sessionStore } from './session-store'
 import { promptWithSuggestions } from './chat-prompt'
 import { AgentRunResult, formatContextUsage, shouldAutoCompact, shouldWarnContextUsage } from './context-usage'
+import { requestToolApproval } from './tool-approval'
 
 import pkg from '../../package.json'
 
@@ -40,12 +41,31 @@ export function buildProgram(): Command {
                 message,
                 (token) => process.stdout.write(token),
                 opts.thread,
+                undefined,
+                {
+                    confirmTool: (request) => requestToolApproval(request, {
+                        interactive: Boolean(process.stdin.isTTY),
+                        readAnswer: readConfirmationLine,
+                        write: (text) => process.stdout.write(text),
+                    }),
+                },
             )
             await reportContextUsage(result, opts.thread)
             process.stdout.write('\n')
         })
 
     return program
+}
+
+function readConfirmationLine(question: string): Promise<string | undefined> {
+    return new Promise((resolve) => {
+        const input = createInterface({ input: process.stdin, output: process.stdout })
+        input.once('close', () => resolve(undefined))
+        input.question(question, (answer) => {
+            resolve(answer)
+            input.close()
+        })
+    })
 }
 
 const INFO_LABEL_WIDTH = 'Description'.length
@@ -196,6 +216,27 @@ async function startInteractiveChat(): Promise<void> {
                 (token) => process.stdout.write(token),
                 session.threadId,
                 controller.signal,
+                {
+                    confirmTool: async (request) => {
+                        if (isTTY) {
+                            process.stdin.off('keypress', onKeypress)
+                            process.stdin.setRawMode(false)
+                        }
+                        try {
+                            return await requestToolApproval(request, {
+                                interactive: isTTY,
+                                readAnswer: readConfirmationLine,
+                                write: (text) => process.stdout.write(text),
+                            })
+                        } finally {
+                            if (isTTY) {
+                                process.stdin.setRawMode(true)
+                                process.stdin.resume()
+                                process.stdin.on('keypress', onKeypress)
+                            }
+                        }
+                    },
+                },
             )
             if (controller.signal.aborted) {
                 process.stdout.write(chalk.yellow('\n[Cancelled]'))

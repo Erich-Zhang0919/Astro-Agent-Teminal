@@ -1,6 +1,6 @@
-import { randomUUID } from 'node:crypto'
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import {
+    AIMessage,
     BaseMessage,
     isAIMessage,
     SystemMessage,
@@ -10,11 +10,11 @@ import {
     BaseCheckpointSaver,
     END,
     GraphNode,
+    interrupt,
     MessagesValue,
     START,
     StateGraph,
     StateSchema,
-    UntrackedValue,
 } from '@langchain/langgraph'
 import type * as LangGraphPrebuilt from '@langchain/langgraph/dist/prebuilt'
 import { z } from 'zod'
@@ -29,6 +29,14 @@ const { ToolNode, toolsCondition } = require(
 export type HistoryPreprocessor = (
     messages: readonly BaseMessage[],
 ) => BaseMessage[] | Promise<BaseMessage[]>
+
+export interface ToolApprovalRequest {
+    toolCallId?: string
+    name: string
+    args: Record<string, unknown>
+    index: number
+    total: number
+}
 
 export interface AgentGraphContext {
     preprocessMessages?: HistoryPreprocessor
@@ -45,21 +53,14 @@ export interface CreateAgentGraphOptions {
 
 const AgentState = new StateSchema({
     messages: MessagesValue,
-    preprocessedMessages: new UntrackedValue<BaseMessage[]>(),
-    sourceMessageIds: new UntrackedValue<string[]>(),
+    approvalDecisions: z.array(z.boolean()).default([]),
 })
 
 const AgentContext = z.object({
     preprocessMessages: z.custom<HistoryPreprocessor>().optional(),
 })
 
-/**
- * 构建一个带有单次、非持久化消息预处理步骤的 ReAct agent 图。
- *
- * `messages` 是 checkpoint 中的 canonical history；`preprocessedMessages`
- * 只在当前 graph run 中存在。工具循环期间产生的新消息会在每次模型调用前
- * 重新追加到预处理后的基础上下文中。
- */
+/** The canonical history is checkpointed; model context is rebuilt after each resume. */
 export function createAgentGraph({
     model,
     tools,
@@ -73,49 +74,74 @@ export function createAgentGraph({
     const modelWithTools = model.bindTools(tools)
     const systemMessage = new SystemMessage(systemPrompt)
 
-    const preprocess: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
-        const sourceMessages = [...state.messages]
-        const sourceMessageIds = sourceMessages.map((message) => {
-            if (!message.id) message.id = randomUUID()
-            return message.id
-        })
-        const preprocessMessages = config.context?.preprocessMessages
-        const preprocessedMessages = preprocessMessages
-            ? await preprocessMessages(sourceMessages)
-            : sourceMessages
-
-        return {
-            preprocessedMessages: [...preprocessedMessages],
-            sourceMessageIds,
-        }
+    const callModel: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
+        const messages = config.context?.preprocessMessages
+            ? await config.context.preprocessMessages(state.messages)
+            : state.messages
+        const response = await modelWithTools.invoke([systemMessage, ...messages], config)
+        return { messages: [response] }
     }
 
-    const callModel: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
-        const sourceMessageIds = new Set(state.sourceMessageIds)
-        const messagesCreatedDuringRun = state.messages.filter(
-            (message) => !message.id || !sourceMessageIds.has(message.id),
-        )
-        const response = await modelWithTools.invoke(
-            [
-                systemMessage,
-                ...state.preprocessedMessages,
-                ...messagesCreatedDuringRun,
-            ],
-            config,
-        )
+    const reviewTools: GraphNode<typeof AgentState, AgentGraphContext> = (state) => {
+        const lastMessage = state.messages[state.messages.length - 1]
+        if (!lastMessage || !isAIMessage(lastMessage)) {
+            throw new Error('Tool approval requires an AI message.')
+        }
 
-        return { messages: [response] }
+        const toolCalls = lastMessage.tool_calls ?? []
+        // The node restarts after each interrupt. No tool can run until all
+        // decisions have been collected and checkpointed.
+        const approvalDecisions = toolCalls.map((call, index) =>
+            interrupt<ToolApprovalRequest, { approved: boolean }>({
+                toolCallId: call.id,
+                name: call.name,
+                args: call.args,
+                index: index + 1,
+                total: toolCalls.length,
+            }).approved === true,
+        )
+        return { approvalDecisions }
     }
 
     const toolExecutor = new ToolNode(tools)
     const toolNode: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
         const lastMessage = state.messages[state.messages.length - 1]
-        if (lastMessage && isAIMessage(lastMessage)) {
-            for (const toolCall of lastMessage.tool_calls ?? []) {
-                console.log(toolCall.name)
-            }
+        if (!lastMessage || !isAIMessage(lastMessage)) {
+            throw new Error('Tool execution requires an AI message.')
         }
-        const result = await toolExecutor.invoke(state, config)
+
+        const toolCalls = lastMessage.tool_calls ?? []
+        if (state.approvalDecisions.length !== toolCalls.length) {
+            throw new Error('Every tool call must have an approval decision.')
+        }
+
+        const rejectedMessages = toolCalls.flatMap((call, index) =>
+            state.approvalDecisions[index] ? [] : [new ToolMessage({
+                tool_call_id: call.id ?? '',
+                name: call.name,
+                status: 'error',
+                content: 'The user rejected this tool call. Do not retry it without a new user request.',
+            })],
+        )
+        if (rejectedMessages.length === toolCalls.length) {
+            return { messages: rejectedMessages }
+        }
+
+        // Pass only approved calls. ToolNode does not skip calls without IDs,
+        // so rejected ToolMessages alone are not an execution barrier.
+        const approvedCalls = toolCalls.filter((_, index) => state.approvalDecisions[index])
+        const approvedMessage = new AIMessage({
+            content: lastMessage.content,
+            tool_calls: approvedCalls,
+        })
+        const approvedIds = new Set(approvedCalls.map((call) => call.id))
+        const executionHistory = state.messages.slice(0, -1).filter((message) =>
+            !ToolMessage.isInstance(message) || !approvedIds.has(message.tool_call_id),
+        )
+        const result = await toolExecutor.invoke({
+            ...state,
+            messages: [...executionHistory, approvedMessage],
+        }, config)
         // ToolNode returns message updates, or a mixture of updates and Commands.
         const updates: unknown[] = Array.isArray(result) ? result : [result]
         for (const update of updates) {
@@ -128,16 +154,30 @@ export function createAgentGraph({
                 }
             }))
         }
-        return result
+
+        if (rejectedMessages.length === 0) return result
+        if (Array.isArray(result)) return [...result, { messages: rejectedMessages }]
+
+        const approvedMessages = result.messages as ToolMessage[]
+        let approvedIndex = 0
+        let rejectedIndex = 0
+        return {
+            ...result,
+            messages: toolCalls.map((_, index) => state.approvalDecisions[index]
+                ? approvedMessages[approvedIndex++]
+                : rejectedMessages[rejectedIndex++]),
+        }
     }
 
     return new StateGraph(AgentState, AgentContext)
-        .addNode('preprocess', preprocess)
         .addNode('model_request', callModel)
+        .addNode('review_tools', reviewTools)
         .addNode('tools', toolNode)
-        .addEdge(START, 'preprocess')
-        .addEdge('preprocess', 'model_request')
-        .addConditionalEdges('model_request', toolsCondition, ['tools', END])
+        .addEdge(START, 'model_request')
+        .addConditionalEdges('model_request', (state) =>
+            toolsCondition(state) === 'tools' ? 'review_tools' : END,
+        ['review_tools', END])
+        .addEdge('review_tools', 'tools')
         .addEdge('tools', 'model_request')
         .compile({ checkpointer })
 }
