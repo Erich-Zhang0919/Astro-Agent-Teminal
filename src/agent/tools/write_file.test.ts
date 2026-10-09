@@ -5,10 +5,12 @@ import { writeFileFn } from './write_file'
 
 describe('writeFileFn', () => {
     let tmpDir: string
+    let outsideFile: string
     let originalCwd: string
 
     beforeEach(async () => {
         tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'write-file-test-'))
+        outsideFile = `${tmpDir}.outside.txt`
         originalCwd = process.cwd()
         process.chdir(tmpDir)
     })
@@ -16,6 +18,7 @@ describe('writeFileFn', () => {
     afterEach(async () => {
         process.chdir(originalCwd)
         await fs.rm(tmpDir, { recursive: true, force: true })
+        await fs.rm(outsideFile, { force: true })
     })
 
     it('creates a new file in the current directory', async () => {
@@ -42,15 +45,13 @@ describe('writeFileFn', () => {
         expect(result).toMatch(/File written successfully/)
     })
 
-    it('throws when path traverses outside cwd', async () => {
-        await expect(
-            writeFileFn({ file_path: '../escape.txt', content: 'bad' }),
-        ).rejects.toThrow('Access denied')
+    it('writes a relative path outside cwd', async () => {
+        await writeFileFn({ file_path: path.relative(tmpDir, outsideFile), content: 'relative' })
+        expect(await fs.readFile(outsideFile, 'utf-8')).toBe('relative')
     })
 
-    it('throws when path uses absolute location outside cwd', async () => {
-        await expect(
-            writeFileFn({ file_path: '/tmp/escape.txt', content: 'bad' }),
-        ).rejects.toThrow('Access denied')
+    it('writes an absolute path outside cwd', async () => {
+        await writeFileFn({ file_path: outsideFile, content: 'absolute' })
+        expect(await fs.readFile(outsideFile, 'utf-8')).toBe('absolute')
     })
 })

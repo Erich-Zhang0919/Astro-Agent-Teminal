@@ -14,6 +14,7 @@ import { runPyFn } from './tools/run_py'
 import { webFetchFn } from './tools/web_fetch'
 import { loadSkillFn } from './tools/load_skill'
 import { profileUpdateFn } from './tools/profile_update'
+import { withPermissionLevel } from './permission/util'
 
 export async function maybePersistedOutput(content: string, toolCallId: string): Promise<string> {
     if (content.length <= 50_000) return content
@@ -42,21 +43,21 @@ export const tools = [
         }),
     }),
     webSearchTool,
-    tool(readFileFn, {
+    withPermissionLevel(tool(readFileFn, {
         name: 'read_file',
-        description: 'Read the contents of a local file. Only files within the current working directory are accessible.',
+        description: 'Read the contents of a local file. Protected paths are blocked.',
         schema: z.object({
-            file_path: z.string().describe('Relative path to the file from the current working directory.'),
+            file_path: z.string().describe('File path, relative to the current working directory or absolute.'),
         }),
-    }),
-    tool(writeFileFn, {
+    }), 'read'),
+    withPermissionLevel(tool(writeFileFn, {
         name: 'write_file',
-        description: 'Create a new file or overwrite an existing file within the current working directory.',
+        description: 'Create or overwrite a local file. Paths outside the current working directory require approval.',
         schema: z.object({
-            file_path: z.string().describe('Relative path to the file from the current working directory.'),
+            file_path: z.string().describe('File path, relative to the current working directory or absolute.'),
             content: z.string().describe('The content to write into the file.'),
         }),
-    }),
+    }), 'write'),
     tool(profileUpdateFn, {
         name: 'profile_update_tool',
         description:

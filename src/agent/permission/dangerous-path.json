@@ -1,0 +1,152 @@
+{
+  "macos": [
+    "~/.ssh",
+    "~/.gnupg",
+    "~/.aws",
+    "~/.azure",
+    "~/.config/gcloud",
+    "~/.kube",
+    "~/.docker",
+    "~/.netrc",
+
+    "~/Library/Keychains",
+
+    "~/Library/Application Support/Google/Chrome",
+    "~/Library/Application Support/Chromium",
+    "~/Library/Application Support/Firefox",
+    "~/Library/Application Support/Slack",
+    "~/Library/Application Support/Discord",
+    "~/Library/Application Support/Telegram",
+    "~/Library/Application Support/Signal",
+
+    "~/.zshrc",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.profile",
+    "~/.env",
+    "~/.env.*",
+
+    "~/.gitconfig",
+    "~/.git-credentials",
+    "~/.npmrc",
+    "~/.pnpmrc",
+    "~/.yarnrc",
+    "~/.pypirc",
+    "~/.m2",
+    "~/.gradle",
+
+    "~/.terraform",
+    "~/.config/gh",
+    "~/.config/gitlab",
+    "~/.circleci",
+    "~/.vercel",
+    "~/.netlify",
+
+    "~/Documents",
+    "~/Pictures",
+    "~/Movies",
+
+    "~/Library/Containers",
+    "/private",
+    "/etc",
+    "/var"
+  ],
+
+  "linux": [
+    "~/.ssh",
+    "~/.gnupg",
+    "~/.pki",
+    "~/.aws",
+    "~/.azure",
+    "~/.config/gcloud",
+    "~/.kube",
+    "~/.docker",
+    "~/.netrc",
+
+    "~/.local/share/keyrings",
+
+    "~/.config/google-chrome",
+    "~/.config/chromium",
+    "~/.mozilla/firefox",
+
+    "~/.config/Slack",
+    "~/.config/discord",
+    "~/.local/share/TelegramDesktop",
+
+    "~/.zshrc",
+    "~/.bashrc",
+    "~/.bash_profile",
+    "~/.profile",
+    "~/.env",
+    "~/.env.*",
+
+    "~/.gitconfig",
+    "~/.git-credentials",
+    "~/.npmrc",
+    "~/.pnpmrc",
+    "~/.yarnrc",
+    "~/.pypirc",
+    "~/.m2",
+    "~/.gradle",
+
+    "~/.terraform",
+    "~/.config/gh",
+    "~/.config/gitlab",
+    "~/.circleci",
+    "~/.vercel",
+    "~/.netlify",
+
+    "~/Documents",
+    "~/Desktop",
+    "~/Downloads",
+    "~/Pictures",
+    "~/Videos",
+
+    "/etc/shadow",
+    "/etc/sudoers",
+    "/proc",
+    "/sys",
+    "/var/lib",
+    "/root"
+  ],
+
+  "windows": [
+    "%USERPROFILE%\\.ssh",
+    "%USERPROFILE%\\.gnupg",
+    "%USERPROFILE%\\.aws",
+    "%USERPROFILE%\\.azure",
+    "%USERPROFILE%\\.kube",
+    "%USERPROFILE%\\.docker",
+
+    "%LOCALAPPDATA%\\Google\\Chrome\\User Data",
+    "%LOCALAPPDATA%\\Chromium\\User Data",
+    "%APPDATA%\\Mozilla\\Firefox",
+
+    "%APPDATA%\\Slack",
+    "%APPDATA%\\Discord",
+    "%APPDATA%\\Telegram Desktop",
+
+    "%USERPROFILE%\\.gitconfig",
+    "%USERPROFILE%\\.git-credentials",
+    "%USERPROFILE%\\.npmrc",
+    "%USERPROFILE%\\.pnpmrc",
+    "%USERPROFILE%\\.yarnrc",
+
+    "%USERPROFILE%\\.m2",
+    "%USERPROFILE%\\.gradle",
+
+    "%USERPROFILE%\\Documents",
+    "%USERPROFILE%\\Desktop",
+    "%USERPROFILE%\\Downloads",
+    "%USERPROFILE%\\Pictures",
+    "%USERPROFILE%\\Videos",
+
+    "%APPDATA%",
+    "%LOCALAPPDATA%",
+
+    "C:\\Windows\\System32",
+    "C:\\Windows\\System32\\config\\SAM",
+    "C:\\Windows\\System32\\config\\SECURITY",
+    "C:\\Windows\\System32\\config\\SYSTEM"
+  ]
+}

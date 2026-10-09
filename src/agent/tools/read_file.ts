@@ -5,11 +5,6 @@ export async function readFileFn({ file_path }: { file_path: string }): Promise<
     const cwd = process.cwd()
     const resolved = path.resolve(cwd, file_path)
 
-    // Reject any path that escapes the current working directory
-    if (!resolved.startsWith(cwd + path.sep) && resolved !== cwd) {
-        throw new Error(`Access denied: path must be within the current directory (${cwd})`)
-    }
-
     try {
         const content = await fs.readFile(resolved, 'utf-8')
         return content

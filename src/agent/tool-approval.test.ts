@@ -1,4 +1,7 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
+import * as fs from 'node:fs'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { AIMessage, BaseMessage, HumanMessage, ToolMessage } from '@langchain/core/messages'
 import { tool } from '@langchain/core/tools'
 import { Command, MemorySaver } from '@langchain/langgraph'
@@ -6,6 +9,11 @@ import { z } from 'zod'
 import { createAgentGraph, ToolApprovalRequest } from './agent-graph'
 import { runGraphWithApprovals } from './agent-runner'
 import { requestToolApproval } from './tool-approval'
+import { decideReadPermission } from './permission/read'
+import { isInProjectDir, withPermissionLevel } from './permission/util'
+import { decideWritePermission } from './permission/write'
+import { readFileFn } from './tools/read_file'
+import { writeFileFn } from './tools/write_file'
 
 jest.mock('./tools', () => ({ maybePersistedOutput: async (content: string) => content }))
 
@@ -180,6 +188,169 @@ describe('tool approval graph', () => {
         const nextModelMessages = invoke.mock.calls[1][0] as BaseMessage[]
         expect(nextModelMessages[1].content).toBe('processed')
         expect(nextModelMessages.filter(ToolMessage.isInstance)).toHaveLength(2)
+    })
+
+    it('automatically runs a read tool when file_path is absent', async () => {
+        const execute = jest.fn(async () => 'ran')
+        const invoke = jest.fn()
+            .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: [
+                { name: 'optional_path', id: 'call_no_path', args: {}, type: 'tool_call' },
+            ] }))
+            .mockResolvedValue(new AIMessage('done'))
+        const model = { bindTools: () => ({ invoke }) } as unknown as BaseChatModel
+        const graph = createAgentGraph({
+            model,
+            tools: [withPermissionLevel(tool(execute, {
+                name: 'optional_path', schema: z.object({}),
+            }), 'read')],
+            systemPrompt: 'test', checkpointer: new MemorySaver(),
+        })
+        const confirmTool = jest.fn(async () => true)
+
+        await runGraphWithApprovals(graph, 'run tool', () => undefined,
+            { configurable: { thread_id: 'no-path' } }, 'test-model', undefined, confirmTool)
+
+        expect(confirmTool).not.toHaveBeenCalled()
+        expect(execute).toHaveBeenCalledTimes(1)
+    })
+
+    it('runs safe reads, blocks dangerous paths, and confirms writes outside the project', async () => {
+        const root = fs.mkdtempSync(path.join(process.cwd(), '.permission-graph-'))
+        const project = path.join(root, 'project')
+        const originalCwd = process.cwd()
+        fs.mkdirSync(project)
+        fs.writeFileSync(path.join(project, 'local.txt'), 'local content')
+        fs.writeFileSync(path.join(root, 'outside-read.txt'), 'outside content')
+        process.chdir(project)
+
+        try {
+            const other = jest.fn(async () => 'other result')
+            const calls = [
+                { name: 'read_file', id: 'local', args: { file_path: 'local.txt' }, type: 'tool_call' as const },
+                { name: 'read_file', id: 'outside_read',
+                    args: { file_path: '../outside-read.txt' }, type: 'tool_call' as const },
+                { name: 'read_file', id: 'danger',
+                    args: { file_path: path.join(os.homedir(), '.ssh', 'id_ed25519') }, type: 'tool_call' as const },
+                { name: 'write_file', id: 'outside',
+                    args: { file_path: '../outside.txt', content: 'outside' }, type: 'tool_call' as const },
+                { name: 'other', id: 'other', args: {}, type: 'tool_call' as const },
+            ]
+            const invoke = jest.fn()
+                .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: calls }))
+                .mockResolvedValue(new AIMessage('done'))
+            const model = { bindTools: () => ({ invoke }) } as unknown as BaseChatModel
+            const graph = createAgentGraph({
+                model,
+                tools: [
+                    withPermissionLevel(tool(readFileFn, { name: 'read_file',
+                        schema: z.object({ file_path: z.string() }) }), 'read'),
+                    withPermissionLevel(tool(writeFileFn, { name: 'write_file',
+                        schema: z.object({ file_path: z.string(), content: z.string() }) }), 'write'),
+                    tool(other, { name: 'other', schema: z.object({}) }),
+                ],
+                systemPrompt: 'test', checkpointer: new MemorySaver(),
+            })
+            const confirmTool = jest.fn(async (request: ToolApprovalRequest) =>
+                request.name === 'other')
+
+            await runGraphWithApprovals(graph, 'run tools', () => undefined,
+                { configurable: { thread_id: 'path-decisions' } },
+                'test-model', undefined, confirmTool)
+
+            expect(confirmTool.mock.calls.map(([request]) => request.name))
+                .toEqual(['write_file', 'other'])
+            expect(other).toHaveBeenCalledTimes(1)
+            expect(fs.existsSync(path.join(root, 'outside.txt'))).toBe(false)
+            const messages = (invoke.mock.calls[1][0] as BaseMessage[])
+                .filter(ToolMessage.isInstance)
+            expect(messages.map((message) => message.tool_call_id))
+                .toEqual(['local', 'outside_read', 'danger', 'outside', 'other'])
+            expect(messages[0].content).toBe('local content')
+            expect(messages[1].content).toBe('outside content')
+            expect(messages[2].content).toContain('protected path')
+            expect(messages[3].content).toContain('user rejected')
+        } finally {
+            process.chdir(originalCwd)
+            fs.rmSync(root, { recursive: true, force: true })
+        }
+    })
+
+    it('writes an external file after the user approves it', async () => {
+        const root = fs.mkdtempSync(path.join(process.cwd(), '.permission-graph-'))
+        const project = path.join(root, 'project')
+        const originalCwd = process.cwd()
+        fs.mkdirSync(project)
+        process.chdir(project)
+
+        try {
+            const invoke = jest.fn()
+                .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: [
+                    { name: 'write_file', id: 'external', type: 'tool_call',
+                        args: { file_path: '../outside.txt', content: 'approved content' } },
+                ] }))
+                .mockResolvedValue(new AIMessage('done'))
+            const model = { bindTools: () => ({ invoke }) } as unknown as BaseChatModel
+            const graph = createAgentGraph({
+                model,
+                tools: [withPermissionLevel(tool(writeFileFn, {
+                    name: 'write_file',
+                    schema: z.object({ file_path: z.string(), content: z.string() }),
+                }), 'write')],
+                systemPrompt: 'test', checkpointer: new MemorySaver(),
+            })
+            const confirmTool = jest.fn(async () => true)
+
+            await runGraphWithApprovals(graph, 'write file', () => undefined,
+                { configurable: { thread_id: 'external-approved' } },
+                'test-model', undefined, confirmTool)
+
+            expect(confirmTool).toHaveBeenCalledTimes(1)
+            expect(fs.readFileSync(path.join(root, 'outside.txt'), 'utf-8'))
+                .toBe('approved content')
+        } finally {
+            process.chdir(originalCwd)
+            fs.rmSync(root, { recursive: true, force: true })
+        }
+    })
+})
+
+describe('file path permission decisions', () => {
+    it('allows safe reads and confirms writes outside the project', () => {
+        const cwd = process.cwd()
+        expect(decideReadPermission({ file_path: 'src/agent/agent.ts' }, cwd))
+            .toEqual({ kind: 'allow' })
+        expect(decideReadPermission({ file_path: '../outside.txt' }, cwd))
+            .toEqual({ kind: 'allow' })
+        expect(decideWritePermission({ file_path: path.join(cwd, 'new.txt') }, cwd))
+            .toEqual({ kind: 'allow' })
+        expect(decideWritePermission({ file_path: '../outside.txt' }, cwd))
+            .toEqual({ kind: 'confirm' })
+        expect(decideReadPermission({}, cwd)).toEqual({ kind: 'allow' })
+        expect(decideWritePermission({}, cwd)).toEqual({ kind: 'allow' })
+    })
+
+    it('checks symlinks and blocks dangerous targets before project membership', () => {
+        const root = fs.mkdtempSync(path.join(process.cwd(), '.permission-path-'))
+        const project = path.join(root, 'project')
+        const outside = path.join(root, 'outside')
+        fs.mkdirSync(project)
+        fs.mkdirSync(outside)
+        fs.symlinkSync(outside, path.join(project, 'safe-link'), 'junction')
+        fs.symlinkSync(os.homedir(), path.join(project, 'home-link'), 'junction')
+
+        try {
+            expect(isInProjectDir('safe-link/new.txt', project)).toBe(false)
+            expect(decideReadPermission({ file_path: 'safe-link/new.txt' }, project))
+                .toEqual({ kind: 'allow' })
+            expect(decideWritePermission({ file_path: 'safe-link/new.txt' }, project))
+                .toEqual({ kind: 'confirm' })
+            expect(decideReadPermission({ file_path: 'home-link/.ssh/id_ed25519' }, project))
+                .toMatchObject({ kind: 'block' })
+            expect(decideWritePermission({ file_path: 'home-link/.ssh/id_ed25519' }, project))
+                .toMatchObject({ kind: 'block' })
+        } finally {
+            fs.rmSync(root, { recursive: true, force: true })
+        }
     })
 })
 

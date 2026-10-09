@@ -5,10 +5,12 @@ import { readFileFn } from './read_file'
 
 describe('readFileFn', () => {
     let tmpDir: string
+    let outsideFile: string
     let originalCwd: string
 
     beforeEach(async () => {
         tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'read-file-test-'))
+        outsideFile = `${tmpDir}.outside.txt`
         originalCwd = process.cwd()
         process.chdir(tmpDir)
     })
@@ -16,6 +18,7 @@ describe('readFileFn', () => {
     afterEach(async () => {
         process.chdir(originalCwd)
         await fs.rm(tmpDir, { recursive: true, force: true })
+        await fs.rm(outsideFile, { force: true })
     })
 
     it('reads a file in the current directory', async () => {
@@ -31,16 +34,16 @@ describe('readFileFn', () => {
         expect(result).toBe('nested content')
     })
 
-    it('throws when path traverses outside cwd', async () => {
-        await expect(readFileFn({ file_path: '../etc/passwd' })).rejects.toThrow(
-            'Access denied',
-        )
+    it('reads a relative path outside cwd', async () => {
+        await fs.writeFile(outsideFile, 'outside content')
+        const result = await readFileFn({ file_path: path.relative(tmpDir, outsideFile) })
+        expect(result).toBe('outside content')
     })
 
-    it('throws when path uses absolute location outside cwd', async () => {
-        await expect(readFileFn({ file_path: '/etc/passwd' })).rejects.toThrow(
-            'Access denied',
-        )
+    it('reads an absolute path outside cwd', async () => {
+        await fs.writeFile(outsideFile, 'absolute content')
+        const result = await readFileFn({ file_path: outsideFile })
+        expect(result).toBe('absolute content')
     })
 
     it('throws a clear error for a missing file, including cwd in message', async () => {

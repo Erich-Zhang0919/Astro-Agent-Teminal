@@ -19,6 +19,9 @@ import {
 import type * as LangGraphPrebuilt from '@langchain/langgraph/dist/prebuilt'
 import { z } from 'zod'
 import { maybePersistedOutput } from './tools'
+import { decideReadPermission } from './permission/read'
+import { decideWritePermission } from './permission/write'
+import { permissionLevelOf } from './permission/util'
 
 // The package exports this subpath at runtime, but the project's legacy
 // `moduleResolution: node` setting cannot discover its conditional types entry.
@@ -54,6 +57,7 @@ export interface CreateAgentGraphOptions {
 const AgentState = new StateSchema({
     messages: MessagesValue,
     approvalDecisions: z.array(z.boolean()).default([]),
+    blockedReasons: z.array(z.string().nullable()).default([]),
 })
 
 const AgentContext = z.object({
@@ -73,6 +77,7 @@ export function createAgentGraph({
 
     const modelWithTools = model.bindTools(tools)
     const systemMessage = new SystemMessage(systemPrompt)
+    const toolByName = new Map(tools.map((item) => [item.name, item]))
 
     const callModel: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
         const messages = config.context?.preprocessMessages
@@ -91,16 +96,30 @@ export function createAgentGraph({
         const toolCalls = lastMessage.tool_calls ?? []
         // The node restarts after each interrupt. No tool can run until all
         // decisions have been collected and checkpointed.
-        const approvalDecisions = toolCalls.map((call, index) =>
-            interrupt<ToolApprovalRequest, { approved: boolean }>({
+        const decisions = toolCalls.map((call, index) => {
+            const level = permissionLevelOf(toolByName.get(call.name))
+            const permission = level === 'read' ? decideReadPermission(call.args)
+                : level === 'write' ? decideWritePermission(call.args)
+                    : { kind: 'confirm' as const }
+            if (permission.kind === 'allow') {
+                return { approved: true, blockedReason: null }
+            }
+            if (permission.kind === 'block') {
+                return { approved: false, blockedReason: permission.message }
+            }
+            const approved = interrupt<ToolApprovalRequest, { approved: boolean }>({
                 toolCallId: call.id,
                 name: call.name,
                 args: call.args,
                 index: index + 1,
                 total: toolCalls.length,
-            }).approved === true,
-        )
-        return { approvalDecisions }
+            }).approved === true
+            return { approved, blockedReason: null }
+        })
+        return {
+            approvalDecisions: decisions.map((decision) => decision.approved),
+            blockedReasons: decisions.map((decision) => decision.blockedReason),
+        }
     }
 
     const toolExecutor = new ToolNode(tools)
@@ -111,7 +130,8 @@ export function createAgentGraph({
         }
 
         const toolCalls = lastMessage.tool_calls ?? []
-        if (state.approvalDecisions.length !== toolCalls.length) {
+        if (state.approvalDecisions.length !== toolCalls.length ||
+            state.blockedReasons.length !== toolCalls.length) {
             throw new Error('Every tool call must have an approval decision.')
         }
 
@@ -120,7 +140,8 @@ export function createAgentGraph({
                 tool_call_id: call.id ?? '',
                 name: call.name,
                 status: 'error',
-                content: 'The user rejected this tool call. Do not retry it without a new user request.',
+                content: state.blockedReasons[index] ??
+                    'The user rejected this tool call. Do not retry it without a new user request.',
             })],
         )
         if (rejectedMessages.length === toolCalls.length) {
