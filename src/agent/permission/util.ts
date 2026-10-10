@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-export type PermissionLevel = 'read' | 'write'
+export type PermissionLevel = 'read' | 'write' | 'exec' | 'network'
 
 export type PermissionDecision =
     | { kind: 'allow' }
@@ -14,14 +14,18 @@ export const PROTECTED_PATH_MESSAGE =
 export function withPermissionLevel<T extends object, L extends PermissionLevel>(
     tool: T,
     permission_level: L,
-): T & { permission_level: L } {
-    return Object.assign(tool, { permission_level })
+): T & { permission_level: L; permission_tool: L } {
+    return Object.assign(tool, { permission_level, permission_tool: permission_level })
 }
 
 export function permissionLevelOf(tool: unknown): PermissionLevel | undefined {
-    const level = tool && typeof tool === 'object' && 'permission_level' in tool
-        ? tool.permission_level : undefined
-    return level === 'read' || level === 'write' ? level : undefined
+    if (!tool || typeof tool !== 'object') return undefined
+    const metadata = tool as Partial<Record<'permission_level' | 'permission_tool', unknown>>
+    for (const field of ['permission_level', 'permission_tool'] as const) {
+        const level = metadata[field]
+        if (level === 'read' || level === 'write' || level === 'exec' || level === 'network') return level
+    }
+    return undefined
 }
 
 export function isInProjectDir(filepath: string, cwd = process.cwd()): boolean {

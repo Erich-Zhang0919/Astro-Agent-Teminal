@@ -7,9 +7,14 @@ import { tool } from '@langchain/core/tools'
 import { Command, MemorySaver } from '@langchain/langgraph'
 import { z } from 'zod'
 import { createAgentGraph, CreateAgentGraphOptions } from './agent-graph'
-import { maybePersistedOutput } from './tools'
+import { maybePersistedOutput, tools } from './tools'
+import { permissionLevelOf } from './permission/util'
 
 jest.mock('./tools/web_search', () => ({ webSearchTool: {} }))
+
+it.each(['search', 'web_fetch'])('registers %s as a network tool', (name) => {
+    expect(permissionLevelOf(tools.find((entry) => entry.name === name))).toBe('network')
+})
 
 let tmpDir: string
 let originalCwd: string
@@ -106,20 +111,6 @@ function setupGraph(tools: CreateAgentGraphOptions['tools']) {
     return { graph, invoke }
 }
 
-async function invokeWithApprovals(
-    graph: ReturnType<typeof setupGraph>['graph'],
-    config: { configurable: { thread_id: string } },
-    count: number,
-) {
-    let result = await graph.invoke({ messages: [new HumanMessage('run tools')] }, config)
-    for (let index = 0; index < count; index += 1) {
-        const snapshot = await graph.getState(config)
-        expect(snapshot.tasks.flatMap((task) => task.interrupts)).toHaveLength(1)
-        result = await graph.invoke(new Command({ resume: { approved: true } }), config)
-    }
-    return result
-}
-
 describe('toolNode output persistence', () => {
     it('persists multiple outputs before the next model call and preserves message metadata', async () => {
         const firstContent = 'a'.repeat(50_001)
@@ -145,7 +136,7 @@ describe('toolNode output persistence', () => {
             }),
         ])
         const config = { configurable: { thread_id: 'multiple' } }
-        const result = await invokeWithApprovals(graph, config, 4)
+        const result = await graph.invoke({ messages: [new HumanMessage('run tools')] }, config)
         const messages = result.messages.filter((message) => ToolMessage.isInstance(message))
 
         expect(messages.map((message) => message.tool_call_id)).toEqual([
@@ -187,9 +178,9 @@ describe('toolNode output persistence', () => {
             tool(() => 'x'.repeat(50_001), { name: 'long', schema: z.object({}) }),
         ])
 
-        const result = await invokeWithApprovals(graph, {
+        const result = await graph.invoke({ messages: [new HumanMessage('run tools')] }, {
             configurable: { thread_id: 'command' },
-        }, 2)
+        })
         const messages = result.messages.filter((message) => ToolMessage.isInstance(message))
         expect(messages[0].content).toBe('command result')
         expect(messages[1].content).toContain('<persisted-output>')
@@ -203,8 +194,7 @@ describe('toolNode output persistence', () => {
         ])
 
         const config = { configurable: { thread_id: 'failure' } }
-        await graph.invoke({ messages: [new HumanMessage('run tools')] }, config)
-        await expect(graph.invoke(new Command({ resume: { approved: true } }), config))
+        await expect(graph.invoke({ messages: [new HumanMessage('run tools')] }, config))
             .rejects.toMatchObject({ code: 'EISDIR' })
         expect(invoke).toHaveBeenCalledTimes(1)
     })

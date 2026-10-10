@@ -21,8 +21,8 @@ function setupGraph() {
     const first = jest.fn(async ({ value }: { value: string }) => `first:${value}`)
     const second = jest.fn(async ({ value }: { value: string }) => `second:${value}`)
     const calls = [
-        { name: 'first', id: 'call_1', args: { value: 'one' }, type: 'tool_call' as const },
-        { name: 'second', id: 'call_2', args: { value: 'two' }, type: 'tool_call' as const },
+        { name: 'first', id: 'call_1', args: { value: 'one', command: 'true' }, type: 'tool_call' as const },
+        { name: 'second', id: 'call_2', args: { value: 'two', command: 'true' }, type: 'tool_call' as const },
     ]
     const invoke = jest.fn()
         .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: calls }))
@@ -30,8 +30,10 @@ function setupGraph() {
     const model = { bindTools: () => ({ invoke }) } as unknown as BaseChatModel
     const checkpointer = new MemorySaver()
     const tools = [
-        tool(first, { name: 'first', schema: z.object({ value: z.string() }) }),
-        tool(second, { name: 'second', schema: z.object({ value: z.string() }) }),
+        withPermissionLevel(tool(first, { name: 'first',
+            schema: z.object({ value: z.string(), command: z.literal('true') }) }), 'exec'),
+        withPermissionLevel(tool(second, { name: 'second',
+            schema: z.object({ value: z.string(), command: z.literal('true') }) }), 'exec'),
     ]
     const graph = createAgentGraph({ model, tools, systemPrompt: 'test', checkpointer })
     return { graph, invoke, first, second, model, tools, checkpointer }
@@ -47,6 +49,33 @@ async function pendingRequest(
 }
 
 describe('tool approval graph', () => {
+    it.each([{}, { permission_level: 'custom' }, { permission_tool: 'custom' }])(
+        'runs tools without a matching permission check without confirmation: %j', async (metadata) => {
+            const execute = jest.fn(async () => 'ran')
+            const invoke = jest.fn()
+                .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: [
+                    { name: 'unchecked', id: 'unchecked_call', args: {}, type: 'tool_call' },
+                ] }))
+                .mockResolvedValue(new AIMessage('done'))
+            const graph = createAgentGraph({
+                model: { bindTools: () => ({ invoke }) } as unknown as BaseChatModel,
+                tools: [Object.assign(tool(execute, { name: 'unchecked', schema: z.object({}) }), metadata)],
+                systemPrompt: 'test', checkpointer: new MemorySaver(),
+            })
+            const confirmTool = jest.fn(async () => false)
+            const config = { configurable: { thread_id: 'unchecked-tool' } }
+
+            await runGraphWithApprovals(graph, 'run tool', () => undefined,
+                config, 'test-model', undefined, confirmTool)
+
+            expect(confirmTool).not.toHaveBeenCalled()
+            expect(execute).toHaveBeenCalledTimes(1)
+            expect(await pendingRequest(graph, config)).toBeUndefined()
+            const messages = (invoke.mock.calls[1][0] as BaseMessage[]).filter(ToolMessage.isInstance)
+            expect(messages[0].content).toBe('ran')
+        },
+    )
+
     it('uses streamed interrupts to confirm each call in a real graph run', async () => {
         const { graph, first, second } = setupGraph()
         const confirmTool = jest.fn(async (pending: ToolApprovalRequest) =>
@@ -129,13 +158,15 @@ describe('tool approval graph', () => {
         const invoke = jest.fn()
             .mockResolvedValueOnce(new AIMessage({
                 content: '',
-                tool_calls: [{ name: 'idless', args: {}, type: 'tool_call' }],
+                tool_calls: [{ name: 'idless', args: { command: 'true' }, type: 'tool_call' }],
             }))
             .mockResolvedValue(new AIMessage('done'))
         const model = { bindTools: () => ({ invoke }) } as unknown as BaseChatModel
         const graph = createAgentGraph({
             model,
-            tools: [tool(execute, { name: 'idless', schema: z.object({}) })],
+            tools: [withPermissionLevel(tool(execute, {
+                name: 'idless', schema: z.object({ command: z.literal('true') }),
+            }), 'exec')],
             systemPrompt: 'test',
             checkpointer: new MemorySaver(),
         })
@@ -148,7 +179,7 @@ describe('tool approval graph', () => {
 
     it('executes a newly approved call even if an earlier turn used the same call ID', async () => {
         const execute = jest.fn(async () => 'ran')
-        const toolCall = { name: 'repeat', id: 'reused', args: {}, type: 'tool_call' as const }
+        const toolCall = { name: 'repeat', id: 'reused', args: { command: 'true' }, type: 'tool_call' as const }
         const invoke = jest.fn()
             .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: [toolCall] }))
             .mockResolvedValueOnce(new AIMessage('first done'))
@@ -157,7 +188,9 @@ describe('tool approval graph', () => {
         const model = { bindTools: () => ({ invoke }) } as unknown as BaseChatModel
         const graph = createAgentGraph({
             model,
-            tools: [tool(execute, { name: 'repeat', schema: z.object({}) })],
+            tools: [withPermissionLevel(tool(execute, {
+                name: 'repeat', schema: z.object({ command: z.literal('true') }),
+            }), 'exec')],
             systemPrompt: 'test', checkpointer: new MemorySaver(),
         })
         const config = { configurable: { thread_id: 'reused-id' } }
@@ -214,6 +247,171 @@ describe('tool approval graph', () => {
         expect(execute).toHaveBeenCalledTimes(1)
     })
 
+    it.each([true, false])('blocks external exec calls and confirms local calls (approval: %s)', async (approved) => {
+        const execute = jest.fn(async ({ command }: { command: string }) => command)
+        const invoke = jest.fn()
+            .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: [
+                { name: 'shell_tool', id: 'outside_exec', type: 'tool_call',
+                    args: { command: 'cd .. && pwd' } },
+                { name: 'shell_tool', id: 'local_exec', type: 'tool_call',
+                    args: { command: 'true' } },
+            ] }))
+            .mockResolvedValue(new AIMessage('done'))
+        const model = { bindTools: () => ({ invoke }) } as unknown as BaseChatModel
+        const graph = createAgentGraph({
+            model,
+            tools: [Object.assign(tool(execute, {
+                name: 'shell_tool', schema: z.object({ command: z.string() }),
+            }), { permission_tool: 'exec' })],
+            systemPrompt: 'test', checkpointer: new MemorySaver(),
+        })
+        const confirmTool = jest.fn(async () => approved)
+
+        await runGraphWithApprovals(graph, 'run commands', () => undefined,
+            { configurable: { thread_id: `exec-permission-${approved}` } },
+            'test-model', undefined, confirmTool)
+
+        expect(confirmTool).toHaveBeenCalledTimes(1)
+        expect(confirmTool).toHaveBeenCalledWith(expect.objectContaining({
+            toolCallId: 'local_exec', args: { command: 'true' },
+        }))
+        expect(execute).toHaveBeenCalledTimes(approved ? 1 : 0)
+        if (approved) expect(execute.mock.calls[0][0]).toEqual({ command: 'true' })
+        const messages = (invoke.mock.calls[1][0] as BaseMessage[]).filter(ToolMessage.isInstance)
+        expect(messages[0]).toMatchObject({ tool_call_id: 'outside_exec', status: 'error' })
+        expect(messages[0].content).toContain('Blocked: command')
+        expect(messages[1].content).toBe(approved ? 'true' :
+            'The user rejected this tool call. Do not retry it without a new user request.')
+    })
+
+    it('executes allowlisted commands without approval while blocking unsafe calls and confirming other calls', async () => {
+        const execute = jest.fn(async ({ command }: { command: string }) => command)
+        const commands = ['pwd', 'cat .env', 'true', 'ls', 'git status', 'echo hello']
+        const invoke = jest.fn()
+            .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: commands.map((command, index) => ({
+                name: 'exec', id: `allowlist_${index}`, type: 'tool_call' as const, args: { command },
+            })) }))
+            .mockResolvedValue(new AIMessage('done'))
+        const graph = createAgentGraph({
+            model: { bindTools: () => ({ invoke }) } as unknown as BaseChatModel,
+            tools: [withPermissionLevel(tool(execute, {
+                name: 'exec', schema: z.object({ command: z.string() }),
+            }), 'exec')],
+            systemPrompt: 'test', checkpointer: new MemorySaver(),
+        })
+        const confirmTool = jest.fn(async () => false)
+        await runGraphWithApprovals(graph, 'run commands', () => undefined,
+            { configurable: { thread_id: 'safe-commands-auto-approved' } },
+            'test-model', undefined, confirmTool)
+
+        expect(confirmTool).toHaveBeenCalledTimes(1)
+        expect(confirmTool).toHaveBeenCalledWith(expect.objectContaining({ args: { command: 'true' } }))
+        expect(execute.mock.calls.map(([args]) => args.command)).toEqual(['pwd', 'ls', 'git status', 'echo hello'])
+        const messages = (invoke.mock.calls[1][0] as BaseMessage[]).filter(ToolMessage.isInstance)
+        expect(messages[1].content).toContain('sensitive information access')
+        expect(messages[2].content).toContain('user rejected')
+    })
+
+    it.each([true, false, undefined])('automatically runs safe/no-URL network calls and gates other domains (approval: %s)', async (approved) => {
+        const execute = jest.fn(async ({ url, query }: { url?: string; query?: string }) => url ?? query ?? 'no URL')
+        const calls = [
+            { name: 'network_tool', id: 'safe_url', args: { url: 'https://docs.python.org/path' }, type: 'tool_call' as const },
+            { name: 'network_tool', id: 'no_url', args: { query: 'search terms' }, type: 'tool_call' as const },
+            { name: 'network_tool', id: 'unknown_url', args: { url: 'https://untrusted.invalid/path' }, type: 'tool_call' as const },
+        ]
+        const invoke = jest.fn()
+            .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: calls }))
+            .mockResolvedValue(new AIMessage('done'))
+        const graph = createAgentGraph({
+            model: { bindTools: () => ({ invoke }) } as unknown as BaseChatModel,
+            tools: [Object.assign(tool(execute, {
+                name: 'network_tool', schema: z.object({ url: z.string().optional(), query: z.string().optional() }),
+            }), { permission_level: 'network', permission_tool: 'read' })],
+            systemPrompt: 'test', checkpointer: new MemorySaver(),
+        })
+        const confirmTool = jest.fn(async () => approved === true)
+        await runGraphWithApprovals(graph, 'run network calls', () => undefined,
+            { configurable: { thread_id: `network-approval-${approved}` } },
+            'test-model', undefined, approved === undefined ? undefined : confirmTool)
+
+        if (approved === undefined) expect(confirmTool).not.toHaveBeenCalled()
+        else {
+            expect(confirmTool).toHaveBeenCalledTimes(1)
+            expect(confirmTool).toHaveBeenCalledWith(expect.objectContaining({
+                toolCallId: 'unknown_url', args: { url: 'https://untrusted.invalid/path' },
+            }))
+        }
+        expect(execute.mock.calls.map(([args]) => args)).toEqual(
+            (approved === true ? calls : calls.slice(0, 2)).map((call) => call.args),
+        )
+        const messages = (invoke.mock.calls[1][0] as BaseMessage[]).filter(ToolMessage.isInstance)
+        expect(messages[0].content).toBe('https://docs.python.org/path')
+        expect(messages[1].content).toBe('search terms')
+        expect(messages[2].content).toBe(approved === true ? 'https://untrusted.invalid/path'
+            : 'The user rejected this tool call. Do not retry it without a new user request.')
+    })
+
+    it('blocks language execution without requesting approval and returns tool guidance to the model', async () => {
+        const execute = jest.fn(async () => 'ran')
+        const commands = ['python3 script.py', 'node script.js', 'go run main.go']
+        const invoke = jest.fn()
+            .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: commands.map((command, index) => ({
+                name: 'exec', id: `language_${index}`, type: 'tool_call' as const, args: { command },
+            })) }))
+            .mockResolvedValue(new AIMessage('done'))
+        const graph = createAgentGraph({
+            model: { bindTools: () => ({ invoke }) } as unknown as BaseChatModel,
+            tools: [withPermissionLevel(tool(execute, {
+                name: 'exec', schema: z.object({ command: z.string() }),
+            }), 'exec')],
+            systemPrompt: 'test', checkpointer: new MemorySaver(),
+        })
+        const confirmTool = jest.fn(async () => true)
+
+        await runGraphWithApprovals(graph, 'run scripts', () => undefined,
+            { configurable: { thread_id: 'language-execution-blocked' } },
+            'test-model', undefined, confirmTool)
+
+        expect(confirmTool).not.toHaveBeenCalled()
+        expect(execute).not.toHaveBeenCalled()
+        const messages = (invoke.mock.calls[1][0] as BaseMessage[]).filter(ToolMessage.isInstance)
+        expect(messages).toHaveLength(3)
+        expect(messages.every((message) => message.status === 'error')).toBe(true)
+        expect(messages[0].content).toContain('run_py')
+        expect(messages[1].content).toContain('run_js')
+        expect(messages[2].content).toContain('non-shell')
+    })
+
+    it('blocks every dangerous operation category before approval or execution', async () => {
+        const execute = jest.fn(async () => 'ran')
+        const commands = ['sudo ls', 'rm file', 'mv a b', 'chmod 777 file',
+            'kill 123', 'useradd user', 'cat .env', 'curl https://example.com']
+        const invoke = jest.fn()
+            .mockResolvedValueOnce(new AIMessage({ content: '', tool_calls: commands.map((command, index) => ({
+                name: 'exec', id: `danger_${index}`, type: 'tool_call' as const, args: { command },
+            })) }))
+            .mockResolvedValue(new AIMessage('done'))
+        const graph = createAgentGraph({
+            model: { bindTools: () => ({ invoke }) } as unknown as BaseChatModel,
+            tools: [withPermissionLevel(tool(execute, {
+                name: 'exec', schema: z.object({ command: z.string() }),
+            }), 'exec')],
+            systemPrompt: 'test', checkpointer: new MemorySaver(),
+        })
+        const confirmTool = jest.fn(async () => true)
+
+        await runGraphWithApprovals(graph, 'run commands', () => undefined,
+            { configurable: { thread_id: 'dangerous-commands-blocked' } },
+            'test-model', undefined, confirmTool)
+
+        expect(confirmTool).not.toHaveBeenCalled()
+        expect(execute).not.toHaveBeenCalled()
+        const messages = (invoke.mock.calls[1][0] as BaseMessage[]).filter(ToolMessage.isInstance)
+        expect(messages).toHaveLength(commands.length)
+        expect(messages.every((message) => message.status === 'error' &&
+            String(message.content).includes('Blocked: dangerous operation'))).toBe(true)
+    })
+
     it('runs safe reads, blocks dangerous paths, and confirms writes outside the project', async () => {
         const root = fs.mkdtempSync(path.join(process.cwd(), '.permission-graph-'))
         const project = path.join(root, 'project')
@@ -250,15 +448,14 @@ describe('tool approval graph', () => {
                 ],
                 systemPrompt: 'test', checkpointer: new MemorySaver(),
             })
-            const confirmTool = jest.fn(async (request: ToolApprovalRequest) =>
-                request.name === 'other')
+            const confirmTool = jest.fn(async () => false)
 
             await runGraphWithApprovals(graph, 'run tools', () => undefined,
                 { configurable: { thread_id: 'path-decisions' } },
                 'test-model', undefined, confirmTool)
 
-            expect(confirmTool.mock.calls.map(([request]) => request.name))
-                .toEqual(['write_file', 'other'])
+            expect(confirmTool).toHaveBeenCalledTimes(1)
+            expect(confirmTool).toHaveBeenCalledWith(expect.objectContaining({ name: 'write_file' }))
             expect(other).toHaveBeenCalledTimes(1)
             expect(fs.existsSync(path.join(root, 'outside.txt'))).toBe(false)
             const messages = (invoke.mock.calls[1][0] as BaseMessage[])

@@ -21,6 +21,8 @@ import { z } from 'zod'
 import { maybePersistedOutput } from './tools'
 import { decideReadPermission } from './permission/read'
 import { decideWritePermission } from './permission/write'
+import { decideExecPermission } from './permission/exec'
+import { decideNetworkPermission } from './permission/network'
 import { permissionLevelOf } from './permission/util'
 
 // The package exports this subpath at runtime, but the project's legacy
@@ -100,7 +102,9 @@ export function createAgentGraph({
             const level = permissionLevelOf(toolByName.get(call.name))
             const permission = level === 'read' ? decideReadPermission(call.args)
                 : level === 'write' ? decideWritePermission(call.args)
-                    : { kind: 'confirm' as const }
+                    : level === 'exec' ? decideExecPermission(call.args)
+                        : level === 'network' ? decideNetworkPermission(call.args)
+                            : { kind: 'allow' as const }
             if (permission.kind === 'allow') {
                 return { approved: true, blockedReason: null }
             }

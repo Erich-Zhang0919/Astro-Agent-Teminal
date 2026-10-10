@@ -17,6 +17,7 @@ jest.mock('@langchain/tavily', () => {
 describe('webSearchTool', () => {
     it('is a tool with the correct name', () => {
         expect(webSearchTool.name).toBe('tavily_search')
+        expect(webSearchTool.permission_level).toBe('network')
     })
 
     it('returns a string result when invoked', async () => {

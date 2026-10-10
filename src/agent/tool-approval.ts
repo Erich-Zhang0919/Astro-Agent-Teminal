@@ -1,3 +1,4 @@
+import chalk from 'chalk'
 import type { ToolApprovalRequest } from './agent-graph'
 
 export interface ToolApprovalPrompt {
@@ -10,7 +11,7 @@ export async function requestToolApproval(
     request: ToolApprovalRequest,
     prompt: ToolApprovalPrompt,
 ): Promise<boolean> {
-    prompt.write(`\nTool ${request.index}/${request.total}: ${request.name}\n`)
+    prompt.write(`\n${chalk.hex('#FFA500')('Tool')} ${request.index}/${request.total}: ${chalk.yellow(request.name)}\n`)
     prompt.write(`Arguments:\n${JSON.stringify(request.args, null, 2)}\n`)
 
     if (!prompt.interactive) {

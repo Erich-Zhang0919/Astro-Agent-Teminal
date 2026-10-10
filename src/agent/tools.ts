@@ -35,13 +35,13 @@ ${content.slice(0, 2000)}
 }
 
 export const tools = [
-    tool(searchFn, {
+    withPermissionLevel(tool(searchFn, {
         name: 'search',
         description: 'Call to surf the web.',
         schema: z.object({
             query: z.string().describe('The query to use in your search.'),
         }),
-    }),
+    }), 'network'),
     webSearchTool,
     withPermissionLevel(tool(readFileFn, {
         name: 'read_file',
@@ -112,13 +112,13 @@ export const tools = [
                 .describe('The exact id of the memory to delete.'),
         }),
     }),
-    tool(execFn, {
+    withPermissionLevel(tool(execFn, {
         name: 'exec',
-        description: 'Execute a shell command in the current working directory. Dangerous operations (rm, sudo, kill, shutdown, etc.) are blocked.',
+        description: 'Execute shell commands. Safe allowlisted reads (ls, pwd, cat, head, tail, grep, find, git status/diff/log, echo, date, whoami and Windows equivalents) run without approval after permission checks; other permitted commands require approval. Non-shell language scripts are blocked: use run_py for Python and run_js for JavaScript or TypeScript. Directory escapes, privilege escalation, file deletion or modification, permission changes, process/service control, user changes, sensitive information access, and network/remote operations are blocked on Windows, macOS and Linux.',
         schema: z.object({
             command: z.string().describe('The shell command to execute.'),
         }),
-    }),
+    }), 'exec'),
     tool(runJsFn, {
         name: 'run_js',
         description: 'Execute JavaScript code using Node.js and return the output. Returns stdout/stderr or an error message if Node.js is not installed.',
@@ -133,13 +133,13 @@ export const tools = [
             code: z.string().describe('The Python code to execute.'),
         }),
     }),
-    tool(webFetchFn, {
+    withPermissionLevel(tool(webFetchFn, {
         name: 'web_fetch',
-        description: 'Fetch the content of a URL (http/https). Returns the raw response body as text, or an error message if the request fails.',
+        description: 'Fetch the content of a URL (http/https). Safe domains do not require approval; other domains require user approval. Returns the raw response body as text, or an error message if the request fails.',
         schema: z.object({
             url: z.string().describe('The full URL to fetch (must start with http:// or https://).'),
         }),
-    }),
+    }), 'network'),
     tool(loadSkillFn, {
         name: 'load_skill',
         description:
