@@ -4,7 +4,7 @@ import { createInterface, emitKeypressEvents } from 'readline'
 import chalk from 'chalk'
 import figlet from 'figlet'
 import boxen from 'boxen'
-import { compactAgentContext, runAgentStream } from './agent'
+import { compactAgentContext, endAgentSession, runAgentStream, startAgentSession } from './agent'
 import {
     ChatCommandContext,
     ChatCommandDefinition,
@@ -15,6 +15,7 @@ import { sessionStore } from './session-store'
 import { promptWithSuggestions } from './chat-prompt'
 import { AgentRunResult, formatContextUsage, shouldAutoCompact, shouldWarnContextUsage } from './context-usage'
 import { requestToolApproval } from './tool-approval'
+import { createAgentDisplay } from './tool-display'
 
 import pkg from '../../package.json'
 
@@ -29,32 +30,51 @@ export function buildProgram(): Command {
     program
         .command('chat')
         .description('Start an interactive chat session with the agent')
-        .action(startInteractiveChat)
+        .option('--hooks <path>', 'Hook configuration path')
+        .action((opts: { hooks?: string }) => startInteractiveChat(opts))
 
     program
         .command('ask <message>')
         .description('Send a single message to the agent and print the response')
         .option('-t, --thread <id>', 'Thread ID for conversation history', randomUUID())
-        .action(async (message: string, opts: { thread: string }) => {
-            process.stdout.write(chalk.blue.bold('Astro: '))
-            const result = await runAgentStream(
-                message,
-                (token) => process.stdout.write(token),
-                opts.thread,
-                undefined,
-                {
-                    confirmTool: (request) => requestToolApproval(request, {
-                        interactive: Boolean(process.stdin.isTTY),
-                        readAnswer: readConfirmationLine,
-                        write: (text) => process.stdout.write(text),
-                    }),
-                },
-            )
-            await reportContextUsage(result, opts.thread)
-            process.stdout.write('\n')
+        .option('--hooks <path>', 'Hook configuration path')
+        .action(async (message: string, opts: { thread: string; hooks?: string }) => {
+            const display = createAgentDisplay(text => { process.stdout.write(text) })
+            const hookOptions = sessionHookOptions(opts.hooks, display.onHookEvent)
+            await startAgentSession(opts.thread, { ...hookOptions, reason: 'ask' })
+            let completed = false
+            try {
+                const result = await runAgentStream(
+                    message,
+                    display.onToken,
+                    opts.thread,
+                    undefined,
+                    {
+                        ...hookOptions,
+                        onToolEvent: display.onToolEvent,
+                        confirmTool: (request) => requestToolApproval(request, {
+                            interactive: Boolean(process.stdin.isTTY),
+                            readAnswer: readConfirmationLine,
+                            write: (text) => process.stdout.write(text),
+                        }),
+                    },
+                )
+                display.finishReply()
+                await reportContextUsage(result, opts.thread)
+                process.stdout.write('\n')
+                completed = true
+            } finally {
+                display.finishReply()
+                await endAgentSession(opts.thread, completed ? 'ask_completed' : 'error')
+            }
         })
 
     return program
+}
+
+function sessionHookOptions(hooksPath: string | undefined, onHookEvent: ReturnType<typeof createAgentDisplay>['onHookEvent']) {
+    return { hooksPath, onHookEvent,
+        onHookDiagnostic: (message: string) => console.error(chalk.red(message)) }
 }
 
 function readConfirmationLine(question: string): Promise<string | undefined> {
@@ -154,12 +174,25 @@ function printBanner(chatCommands: ChatCommandDefinition[]): void {
     console.log(usage + '\n')
 }
 
-async function startInteractiveChat(): Promise<void> {
+async function startInteractiveChat(opts: { hooks?: string }): Promise<void> {
     const session = { threadId: randomUUID() }
+    const display = createAgentDisplay(text => { process.stdout.write(text) })
+    const hookOptions = sessionHookOptions(opts.hooks, display.onHookEvent)
+    await startAgentSession(session.threadId, { ...hookOptions, reason: 'startup' })
     const chatCommands = createChatCommandRegistry({
         listRecentSessions: (limit) => sessionStore.listRecentSessions(limit),
         sessionExists: (threadId) => sessionStore.hasSession(threadId),
         compactContext: compactAgentContext,
+        switchSession: async (from, to, reason) => {
+            if (from === to) return
+            await startAgentSession(to, { ...hookOptions, reason })
+            try {
+                await endAgentSession(from, 'switch')
+            } catch (error) {
+                await endAgentSession(to, 'error')
+                throw error
+            }
+        },
     })
     const commandContext: ChatCommandContext = {
         session,
@@ -171,92 +204,112 @@ async function startInteractiveChat(): Promise<void> {
     const fallbackInterface = isTTY
         ? undefined
         : createInterface({ input: process.stdin, output: process.stdout })
+    let inputClosed = false
+    fallbackInterface?.once('close', () => { inputClosed = true })
     const prompt = () => isTTY
         ? promptWithSuggestions(chatCommands)
-        : new Promise<string>((resolve) => fallbackInterface?.question('You: ', resolve))
+        : new Promise<string>((resolve) => {
+            if (inputClosed) return resolve('exit')
+            const onClose = () => resolve('exit')
+            fallbackInterface?.once('close', onClose)
+            fallbackInterface?.question('You: ', (answer) => {
+                fallbackInterface.off('close', onClose)
+                resolve(answer)
+            })
+        })
 
     if (isTTY) emitKeypressEvents(process.stdin)
 
     printBanner(chatCommands.list())
 
-    while (true) {
-        const input = await prompt()
-        if (!input.trim()) continue
-        if (isTTY) process.stdout.write(`${chalk.green.bold('You: ')}${input}\n`)
-        if (input.trim().toLowerCase() === 'exit') {
-            console.log(chalk.gray('Goodbye!'))
-            fallbackInterface?.close()
-            break
-        }
-        if (await chatCommands.dispatch(input, commandContext)) {
-            continue
-        }
-
-        fallbackInterface?.pause()
-
-        const controller = new AbortController()
-
-        const onKeypress = (_str: string | undefined, key: { name: string }) => {
-            if (key?.name === 'escape') {
-                controller.abort()
+    let completed = false
+    try {
+        while (true) {
+            const input = await prompt()
+            if (!input.trim()) continue
+            if (isTTY) process.stdout.write(`${chalk.green.bold('You: ')}${input}\n`)
+            if (input.trim().toLowerCase() === 'exit') {
+                console.log(chalk.gray('Goodbye!'))
+                completed = true
+                break
             }
-        }
-
-        if (isTTY) {
-            process.stdin.setRawMode(true)
-            process.stdin.resume()
-            process.stdin.on('keypress', onKeypress)
-        }
-
-        process.stdout.write(chalk.dim('\n(Press ESC to cancel)\n') + chalk.blue.bold('Astro: '))
-
-        try {
-            const result = await runAgentStream(
-                input,
-                (token) => process.stdout.write(token),
-                session.threadId,
-                controller.signal,
-                {
-                    confirmTool: async (request) => {
-                        if (isTTY) {
-                            process.stdin.off('keypress', onKeypress)
-                            process.stdin.setRawMode(false)
-                        }
-                        try {
-                            return await requestToolApproval(request, {
-                                interactive: isTTY,
-                                readAnswer: readConfirmationLine,
-                                write: (text) => process.stdout.write(text),
-                            })
-                        } finally {
-                            if (isTTY) {
-                                process.stdin.setRawMode(true)
-                                process.stdin.resume()
-                                process.stdin.on('keypress', onKeypress)
-                            }
-                        }
-                    },
-                },
-            )
-            if (controller.signal.aborted) {
-                process.stdout.write(chalk.yellow('\n[Cancelled]'))
-            } else {
-                await reportContextUsage(result, session.threadId)
+            if (await chatCommands.dispatch(input, commandContext)) {
+                continue
             }
-        } catch (err) {
-            if (!controller.signal.aborted) {
-                console.error(chalk.red.bold('\nError:'), chalk.red((err as Error).message))
-            } else {
-                process.stdout.write(chalk.yellow('\n[Cancelled]'))
+
+            fallbackInterface?.pause()
+
+            const controller = new AbortController()
+
+            const onKeypress = (_str: string | undefined, key: { name: string }) => {
+                if (key?.name === 'escape') {
+                    controller.abort()
+                }
             }
-        } finally {
+
             if (isTTY) {
-                process.stdin.off('keypress', onKeypress)
-                process.stdin.setRawMode(false)
+                process.stdin.setRawMode(true)
+                process.stdin.resume()
+                process.stdin.on('keypress', onKeypress)
             }
-        }
 
-        process.stdout.write('\n\n')
-        fallbackInterface?.resume()
+            process.stdout.write(chalk.dim('\n(Press ESC to cancel)\n'))
+
+            try {
+                const result = await runAgentStream(
+                    input,
+                    display.onToken,
+                    session.threadId,
+                    controller.signal,
+                    {
+                        ...hookOptions,
+                        onToolEvent: display.onToolEvent,
+                        confirmTool: async (request) => {
+                            if (isTTY) {
+                                process.stdin.off('keypress', onKeypress)
+                                process.stdin.setRawMode(false)
+                            }
+                            try {
+                                return await requestToolApproval(request, {
+                                    interactive: isTTY,
+                                    readAnswer: readConfirmationLine,
+                                    write: (text) => process.stdout.write(text),
+                                })
+                            } finally {
+                                if (isTTY) {
+                                    process.stdin.setRawMode(true)
+                                    process.stdin.resume()
+                                    process.stdin.on('keypress', onKeypress)
+                                }
+                            }
+                        },
+                    },
+                )
+                if (controller.signal.aborted) {
+                    process.stdout.write(chalk.yellow('\n[Cancelled]'))
+                } else {
+                    display.finishReply()
+                    await reportContextUsage(result, session.threadId)
+                }
+            } catch (err) {
+                if (!controller.signal.aborted) {
+                    console.error(chalk.red.bold('\nError:'), chalk.red((err as Error).message))
+                } else {
+                    process.stdout.write(chalk.yellow('\n[Cancelled]'))
+                }
+            } finally {
+                display.finishReply()
+                if (isTTY) {
+                    process.stdin.off('keypress', onKeypress)
+                    process.stdin.setRawMode(false)
+                }
+            }
+
+            process.stdout.write('\n\n')
+            fallbackInterface?.resume()
+        }
+    } finally {
+        fallbackInterface?.close()
+        await endAgentSession(session.threadId, completed ? 'exit' : 'error')
     }
 }

@@ -140,6 +140,7 @@ const commonDomainsCNForDevelopers = [
 export function isSafeDomain(url: string): boolean {
   try {
     const parsed = new URL(url);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
     const hostname = parsed.hostname.toLowerCase().replace(/\.$/, "");
     return commonDomainsCNForDevelopers.some((domain) =>
       hostname === domain || hostname.endsWith(`.${domain}`)

@@ -7,6 +7,8 @@ import {
     SystemMessage,
     ToolMessage,
     getBufferString,
+    isAIMessage,
+    isBaseMessage,
 } from '@langchain/core/messages'
 
 export interface TokenUsage {
@@ -93,6 +95,8 @@ export async function collectAgentStream(
         const metadata = rawChunk[1] as StreamMetadata | undefined
 
         if (!message || metadata?.langgraph_node !== 'model_request') continue
+        const candidate: unknown = message
+        if (isBaseMessage(candidate) && !isAIMessage(candidate)) continue
 
         const chunkModelId = extractModelId(message)
         if (chunkModelId) modelId = chunkModelId

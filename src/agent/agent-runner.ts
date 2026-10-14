@@ -1,12 +1,14 @@
 import { Command } from '@langchain/langgraph'
-import type { createAgentGraph, HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
+import { isAIMessage } from '@langchain/core/messages'
+import { randomUUID } from 'node:crypto'
+import type { AgentGraphContext, createAgentGraph, ToolApprovalRequest } from './agent-graph'
 import { collectAgentStream, TokenUsage } from './context-usage'
 
 type AgentGraph = ReturnType<typeof createAgentGraph>
 
 export interface AgentRunnerConfig {
     configurable: { thread_id: string }
-    context?: { preprocessMessages: HistoryPreprocessor | undefined }
+    context?: AgentGraphContext
 }
 
 export interface AgentRunnerResult {
@@ -26,8 +28,8 @@ export async function runGraphWithApprovals(
 ): Promise<AgentRunnerResult> {
     const result: AgentRunnerResult = { text: '', modelId: configuredModelId }
 
-    const pendingApproval = async (): Promise<ToolApprovalRequest | undefined> => {
-        const snapshot = await graph.getState(config)
+    const approvalFromSnapshot = (snapshot: Awaited<ReturnType<AgentGraph['getState']>>):
+        ToolApprovalRequest | undefined => {
         const pending = snapshot.tasks.flatMap((task) => task.interrupts)[0]
         if (!pending) return undefined
         const value = pending.value
@@ -40,6 +42,7 @@ export async function runGraphWithApprovals(
         }
         return value as ToolApprovalRequest
     }
+    const pendingApproval = async () => approvalFromSnapshot(await graph.getState(config))
 
     const decision = async (request: ToolApprovalRequest): Promise<boolean> =>
         (await confirmTool?.(request)) === true
@@ -68,12 +71,28 @@ export async function runGraphWithApprovals(
 
     // A previous run may have been cancelled while waiting for confirmation.
     // Resolve its checkpoint before adding a new user message to this thread.
-    const previousApproval = await pendingApproval()
+    let previousState = await graph.getState(config)
+    if (!signal?.aborted && previousState.next?.includes('tools') && !previousState.values.hookBatchId) {
+        // Before hooks existed, approval checkpoints pointed straight at tools.
+        // Rebase that boundary to the new pre-hook stage without asking again.
+        const message = previousState.values.messages.at(-1)
+        if (!message || !isAIMessage(message)) throw new Error('Invalid legacy tool checkpoint.')
+        await graph.updateState(config, {
+            hookBatchId: randomUUID(), hookCalls: message.tool_calls ?? [],
+            hookUpdates: [], pendingHookMessages: [],
+        }, 'review_tools')
+        previousState = await graph.getState(config)
+    }
+    const previousApproval = approvalFromSnapshot(previousState)
     if (previousApproval && !signal?.aborted) {
         const approved = await decision(previousApproval)
         if (!signal?.aborted) {
             await runUntilSettled(new Command({ resume: { approved } }))
         }
+    } else if (previousState.next?.length && !signal?.aborted) {
+        // Resume checkpointed work before adding a new message, including a tool
+        // result whose post hooks were cancelled in a previous run.
+        await runUntilSettled(null)
     }
     if (!signal?.aborted) {
         await runUntilSettled({ messages: [{ role: 'user', content: userMessage }] })

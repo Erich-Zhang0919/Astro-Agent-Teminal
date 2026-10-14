@@ -13,12 +13,21 @@ import { createAgentGraph, HistoryPreprocessor, ToolApprovalRequest } from './ag
 import { ContextCompactionStore } from './context-compaction-store'
 import { systemPrompt } from './prompt'
 import { runGraphWithApprovals } from './agent-runner'
+import { HookSessions, HookSessionOptions, SessionEndReason, HookEventCallback } from './hooks/engine'
+import { HookContextStore } from './hooks/context-store'
+import type { ToolEventCallback } from './tool-events'
 
 export { HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
+export type { ToolExecutionEvent, ToolEventCallback } from './tool-events'
+export type { HookExecutionEvent, HookEventCallback } from './hooks/engine'
 
 export interface RunAgentOptions {
     preprocessMessages?: HistoryPreprocessor
     confirmTool?: (request: ToolApprovalRequest) => Promise<boolean>
+    hooksPath?: string
+    onHookDiagnostic?: (message: string) => void
+    onHookEvent?: HookEventCallback
+    onToolEvent?: ToolEventCallback
 }
 
 // ── Model ──────────────────────────────────────────────────
@@ -52,6 +61,19 @@ export const agent = createAgentGraph({
 })
 
 export const contextCompactionStore = new ContextCompactionStore()
+const hookContextStore = new HookContextStore()
+const hookSessions = new HookSessions(hookContextStore)
+
+export async function startAgentSession(
+    threadId: string,
+    options: RunAgentOptions & HookSessionOptions = {},
+): Promise<void> {
+    await hookSessions.start(threadId, options)
+}
+
+export async function endAgentSession(threadId: string, reason: SessionEndReason): Promise<void> {
+    await hookSessions.end(threadId, reason)
+}
 
 export async function compactAgentContext(threadId: string): Promise<ContextCompactionResult> {
     const [messages, previousRecord] = await Promise.all([
@@ -85,6 +107,8 @@ export async function runAgentStream(
     signal?: AbortSignal,
     options: RunAgentOptions = {},
 ): Promise<AgentRunResult> {
+    await startAgentSession(threadId, { ...options, signal })
+    const hooks = await hookSessions.get(threadId)
     const cachedCompaction = await contextCompactionStore.get(threadId)
     const preprocessMessages: HistoryPreprocessor = async (messages) => {
         const cachedRecordIsValid = cachedCompaction !== undefined &&
@@ -103,11 +127,22 @@ export async function runAgentStream(
     }
     const config = {
         configurable: { thread_id: threadId },
-        context: { preprocessMessages },
+        context: { preprocessMessages, hooks, onToolEvent: options.onToolEvent,
+            hookMessages: () => hookContextStore.get(threadId) },
     }
-    const result = await runGraphWithApprovals(
-        agent, userMessage, onToken, config, MODEL_ID, signal, options.confirmTool,
-    )
+    let result: Awaited<ReturnType<typeof runGraphWithApprovals>>
+    try {
+        result = await runGraphWithApprovals(
+            agent, userMessage, onToken, config, MODEL_ID, signal, options.confirmTool,
+        )
+    } finally {
+        // Only acknowledge inbox messages that made it into a durable checkpoint.
+        // Stable IDs also suppress duplicates if the process exits before this cleanup.
+        const messages = await sessionStore.getMessages(threadId)
+        const ids = new Set(messages.map(message => message.id))
+        hookContextStore.acknowledge(threadId, hookContextStore.get(threadId)
+            .filter(injection => ids.has(injection.id)).map(injection => injection.id))
+    }
 
     if (signal?.aborted) return result
 

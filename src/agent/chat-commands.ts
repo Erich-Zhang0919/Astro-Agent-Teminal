@@ -28,6 +28,7 @@ export interface ChatCommandDependencies {
     compactContext: (threadId: string) => Promise<ContextCompactionResult>
     createThreadId?: () => string
     now?: () => Date
+    switchSession?: (from: string, to: string, reason: 'new' | 'resume') => Promise<void>
 }
 
 export class ChatCommandRegistry {
@@ -85,19 +86,21 @@ export function createChatCommandRegistry({
     compactContext,
     createThreadId = randomUUID,
     now = () => new Date(),
+    switchSession,
 }: ChatCommandDependencies): ChatCommandRegistry {
     return new ChatCommandRegistry()
         .register({
             name: 'new',
             description: 'Start a new chat session',
             usage: '/new',
-            execute: (rawArgs, context) => {
+            execute: async (rawArgs, context) => {
                 if (rawArgs) {
                     context.writeLine('Usage: /new', 'error')
                     return
                 }
 
                 const threadId = createThreadId()
+                await switchSession?.(context.session.threadId, threadId, 'new')
                 context.session.threadId = threadId
                 context.writeLine(`New session started: ${threadId}`)
             },
@@ -153,6 +156,7 @@ export function createChatCommandRegistry({
                     return
                 }
 
+                await switchSession?.(context.session.threadId, rawArgs, 'resume')
                 context.session.threadId = rawArgs
                 context.writeLine(`Session restored: ${rawArgs}`)
             },
