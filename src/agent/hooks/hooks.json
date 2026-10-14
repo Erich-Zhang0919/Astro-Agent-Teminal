@@ -1,7 +1,10 @@
 {
   "hooks": {
     "SessionStart": [{ "command": "node ./scripts/session-start.js" }],
-    "PreToolUse": [{ "matcher": "exec", "command": "node ./scripts/check-command.js" }],
+    "PreToolUse": [
+      { "matcher": "exec", "command": "node ./scripts/check-command.js" },
+      { "matcher": "read_file", "command": "sh ./src/agent/hooks/protect_env.sh" }
+    ],
     "PostToolUse": [{ "matcher": "*", "command": "node ./scripts/record-result.js" }],
     "SessionEnd": [{ "command": "node ./scripts/session-end.js" }]
   }
