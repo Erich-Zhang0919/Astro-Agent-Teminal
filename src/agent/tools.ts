@@ -15,6 +15,7 @@ import { webFetchFn } from './tools/web_fetch'
 import { loadSkillFn } from './tools/load_skill'
 import { profileUpdateFn } from './tools/profile_update'
 import { withPermissionLevel } from './permission/util'
+import { agentTool } from './tools/agent_tool'
 
 export async function maybePersistedOutput(content: string, toolCallId: string): Promise<string> {
     if (content.length <= 50_000) return content
@@ -35,6 +36,7 @@ ${content.slice(0, 2000)}
 }
 
 export const tools = [
+    agentTool,
     withPermissionLevel(tool(searchFn, {
         name: 'search',
         description: 'Call to surf the web.',

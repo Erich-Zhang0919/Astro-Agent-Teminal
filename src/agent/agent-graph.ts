@@ -53,6 +53,7 @@ export interface ToolApprovalRequest {
 }
 
 export interface AgentGraphContext extends Record<string, unknown> {
+    runSubAgent?: (prompt: string) => Promise<string>
     preprocessMessages?: HistoryPreprocessor
     hooks?: HookEngine
     hookMessages?: () => HookInjection[] | Promise<HookInjection[]>
@@ -147,7 +148,8 @@ export function createAgentGraph({
             const level = permissionLevelOf(toolByName.get(call.name))
             const permission = level === 'read' ? decideReadPermission(call.args)
                 : level === 'write' ? decideWritePermission(call.args)
-                    : level === 'exec' ? decideExecPermission(call.args)
+                    : level === 'exec' ? (call.name === 'agent_tool'
+                        ? { kind: 'confirm' as const } : decideExecPermission(call.args))
                         : level === 'network' ? decideNetworkPermission(call.args)
                             : { kind: 'allow' as const }
             if (permission.kind === 'allow') {

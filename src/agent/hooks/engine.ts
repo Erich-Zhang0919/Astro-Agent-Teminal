@@ -80,7 +80,7 @@ export class HookSessions {
 
     constructor(private readonly inbox: {
         append(sessionId: string, injections: HookInjection[]): void
-    }) {}
+    }, private readonly inheritedHooks?: HookEngine) {}
 
     async start(sessionId: string, options: HookSessionOptions = {}): Promise<void> {
         if (!sessionId) throw new Error('A thread ID is required to start an agent session.')
@@ -94,7 +94,7 @@ export class HookSessions {
         }
         const activation = (async () => {
             const activationId = randomUUID()
-            const hooks = await HookEngine.load({ cwd: process.cwd(),
+            const hooks = this.inheritedHooks ?? await HookEngine.load({ cwd: process.cwd(),
                 hooksPath: options.hooksPath, onDiagnostic: options.onHookDiagnostic,
                 onHookEvent: options.onHookEvent })
             const eventId = `${activationId}:SessionStart`

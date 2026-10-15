@@ -98,3 +98,27 @@ conversation. Tool output passed to the agent is unchanged.
 API callers can receive the same execution notifications using `onToolEvent` in
 `runAgentStream` options and hook notifications using `onHookEvent` in session
 options. These notifications are separate from reply tokens.
+
+## SubAgent delegation
+
+The main agent can call `agent_tool` with only `{ "prompt": "self-contained task" }`.
+It normally handles work itself, and delegates independent tasks with a clear
+deliverable when a separate working context is useful, or when explicitly asked.
+Skill routing still comes first. This choice is guided by the system prompt and
+tool description; it is not a deterministic task classifier.
+
+Starting a child requires exec approval. Each parent session runs at most one
+child at a time; multiple calls queue sequentially. The parent waits for the final
+answer, reviews it, and continues. Different parent sessions can run independently.
+
+Children use the same model, skills, long-term memory, tool permission checks and
+active hook configuration. They have unique session IDs and can use every tool
+except `agent_tool`, so nesting is unavailable. Only the task prompt is forwarded;
+parent chat history, preprocessing and compaction context are not copied.
+
+Child chat checkpoints and hook context stay in memory and are released on exit;
+long-term memories explicitly written through tools remain stored under the child
+session ID. Children do not compact context. Their intermediate reply tokens and
+usage do not enter the parent reply stream, while tool and hook notifications use
+the parent's callbacks. Cancellation stops the child and the current parent run.
+The final result follows the normal tool-output preview storage rules.

@@ -1,4 +1,9 @@
 import { ChatOpenAI } from '@langchain/openai'
+import { randomUUID } from 'node:crypto'
+import { isAIMessage, type BaseMessage } from '@langchain/core/messages'
+import { AsyncLocalStorageProviderSingleton } from '@langchain/core/singletons'
+import { MemorySaver } from '@langchain/langgraph'
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { tools } from './tools'
 import { checkpointer, sessionStore } from './session-store'
 import {
@@ -9,13 +14,14 @@ import {
     isCompactionRecordValidForMessages,
 } from './context-usage'
 import { getModelContextWindow } from './model-metadata'
-import { createAgentGraph, HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
+import { createAgentGraph, CreateAgentGraphOptions, HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
 import { ContextCompactionStore } from './context-compaction-store'
-import { systemPrompt } from './prompt'
+import { systemPrompt, delegationPrompt } from './prompt'
 import { runGraphWithApprovals } from './agent-runner'
-import { HookSessions, HookSessionOptions, SessionEndReason, HookEventCallback } from './hooks/engine'
-import { HookContextStore } from './hooks/context-store'
+import { HookEngine, HookSessions, HookSessionOptions, SessionEndReason, HookEventCallback } from './hooks/engine'
+import { HookContextStore, MemoryHookContextStore } from './hooks/context-store'
 import type { ToolEventCallback } from './tool-events'
+import { SubAgentQueue } from './subagent-queue'
 
 export { HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
 export type { ToolExecutionEvent, ToolEventCallback } from './tool-events'
@@ -41,38 +47,48 @@ const sharedModelOptions = {
     modelKwargs: { thinking: { type: 'disabled' } },  // 关闭 thinking
 }
 
+// Normalize the integrations' parallel CJS/ESM declaration trees at this boundary.
 const model = new ChatOpenAI({
     ...sharedModelOptions,
     streaming: true,
     streamUsage: true,
-})
+}) as unknown as BaseChatModel
 
 const compactionModel = new ChatOpenAI({
     ...sharedModelOptions,
     streaming: false,
-})
+}) as unknown as BaseChatModel
 
 // ── Agent & Memory ────────────────────────────────────────────
-export const agent = createAgentGraph({
-    model,
-    tools,
-    systemPrompt,
-    checkpointer,
-})
+function createRuntime(isSubAgent: boolean, inheritedHooks?: HookEngine) {
+    const inbox = isSubAgent ? new MemoryHookContextStore() : new HookContextStore()
+    const saver = isSubAgent ? new MemorySaver() : checkpointer
+    const availableTools = tools as unknown as CreateAgentGraphOptions['tools']
+    const graph = createAgentGraph({
+        model,
+        tools: isSubAgent ? availableTools.filter(item => item.name !== 'agent_tool') : availableTools,
+        systemPrompt: isSubAgent ? systemPrompt : `${systemPrompt}\n\n${delegationPrompt}`,
+        checkpointer: saver,
+    })
+    return { graph, inbox, saver, sessions: new HookSessions(inbox, inheritedHooks), isSubAgent }
+}
+
+type AgentRuntime = ReturnType<typeof createRuntime>
+const mainRuntime = createRuntime(false)
+const subAgentQueue = new SubAgentQueue()
+export const agent = mainRuntime.graph
 
 export const contextCompactionStore = new ContextCompactionStore()
-const hookContextStore = new HookContextStore()
-const hookSessions = new HookSessions(hookContextStore)
 
 export async function startAgentSession(
     threadId: string,
     options: RunAgentOptions & HookSessionOptions = {},
 ): Promise<void> {
-    await hookSessions.start(threadId, options)
+    await mainRuntime.sessions.start(threadId, options)
 }
 
 export async function endAgentSession(threadId: string, reason: SessionEndReason): Promise<void> {
-    await hookSessions.end(threadId, reason)
+    await mainRuntime.sessions.end(threadId, reason)
 }
 
 export async function compactAgentContext(threadId: string): Promise<ContextCompactionResult> {
@@ -107,10 +123,22 @@ export async function runAgentStream(
     signal?: AbortSignal,
     options: RunAgentOptions = {},
 ): Promise<AgentRunResult> {
-    await startAgentSession(threadId, { ...options, signal })
-    const hooks = await hookSessions.get(threadId)
-    const cachedCompaction = await contextCompactionStore.get(threadId)
-    const preprocessMessages: HistoryPreprocessor = async (messages) => {
+    return runAgent(mainRuntime, userMessage, onToken, threadId, signal, options)
+}
+
+/** Both roles enter through the same session lifecycle, ReAct graph and approval loop. */
+async function runAgent(
+    runtime: AgentRuntime,
+    userMessage: string,
+    onToken: (token: string) => void,
+    threadId: string,
+    signal: AbortSignal | undefined,
+    options: RunAgentOptions,
+): Promise<AgentRunResult> {
+    await runtime.sessions.start(threadId, { ...options, signal })
+    const hooks = await runtime.sessions.get(threadId)
+    const cachedCompaction = runtime.isSubAgent ? undefined : await contextCompactionStore.get(threadId)
+    const preprocessMessages: HistoryPreprocessor | undefined = runtime.isSubAgent ? undefined : async (messages) => {
         const cachedRecordIsValid = cachedCompaction !== undefined &&
             isCompactionRecordValidForMessages(cachedCompaction, messages)
         if (cachedCompaction && !cachedRecordIsValid) {
@@ -128,23 +156,27 @@ export async function runAgentStream(
     const config = {
         configurable: { thread_id: threadId },
         context: { preprocessMessages, hooks, onToolEvent: options.onToolEvent,
-            hookMessages: () => hookContextStore.get(threadId) },
+            hookMessages: () => runtime.inbox.get(threadId),
+            runSubAgent: runtime.isSubAgent ? undefined : (prompt: string) => subAgentQueue.run(
+                threadId, () => runSubAgent(prompt, signal, options, hooks), signal,
+            ) },
     }
     let result: Awaited<ReturnType<typeof runGraphWithApprovals>>
     try {
         result = await runGraphWithApprovals(
-            agent, userMessage, onToken, config, MODEL_ID, signal, options.confirmTool,
+            runtime.graph, userMessage, onToken, config, MODEL_ID, signal, options.confirmTool,
         )
     } finally {
         // Only acknowledge inbox messages that made it into a durable checkpoint.
         // Stable IDs also suppress duplicates if the process exits before this cleanup.
-        const messages = await sessionStore.getMessages(threadId)
+        const snapshot = await runtime.graph.getState(config)
+        const messages = (snapshot.values.messages ?? []) as BaseMessage[]
         const ids = new Set(messages.map(message => message.id))
-        hookContextStore.acknowledge(threadId, hookContextStore.get(threadId)
+        runtime.inbox.acknowledge(threadId, runtime.inbox.get(threadId)
             .filter(injection => ids.has(injection.id)).map(injection => injection.id))
     }
 
-    if (signal?.aborted) return result
+    if (signal?.aborted || runtime.isSubAgent) return result
 
     const configuredContextWindow = getModelContextWindow(MODEL_ID, {
         apiKey: process.env.MOONSHOT_API_KEY,
@@ -158,4 +190,44 @@ export async function runAgentStream(
         })
 
     return { ...result, contextWindow }
+}
+
+async function runSubAgent(
+    prompt: string,
+    signal: AbortSignal | undefined,
+    options: RunAgentOptions,
+    hooks: HookEngine,
+): Promise<string> {
+    // LangGraph otherwise inherits the ambient parent's checkpoint and callbacks,
+    // even when a fresh thread_id is explicitly supplied to the child graph.
+    return AsyncLocalStorageProviderSingleton.runWithConfig({}, async () => {
+        signal?.throwIfAborted()
+        const runtime = createRuntime(true, hooks)
+        const threadId = `subagent-${randomUUID()}`
+        const { confirmTool, hooksPath, onHookDiagnostic, onHookEvent, onToolEvent } = options
+        let completed = false
+        try {
+            await runAgent(runtime, prompt, () => undefined, threadId, signal,
+                { confirmTool, hooksPath, onHookDiagnostic, onHookEvent, onToolEvent })
+            signal?.throwIfAborted()
+            const snapshot = await runtime.graph.getState({ configurable: { thread_id: threadId } })
+            const finalMessage = (snapshot.values.messages as BaseMessage[]).at(-1)
+            if (!finalMessage || !isAIMessage(finalMessage) || finalMessage.tool_calls?.length) {
+                throw new Error('SubAgent finished without a final response.')
+            }
+            const text = typeof finalMessage.content === 'string' ? finalMessage.content
+                : finalMessage.content.flatMap(block => block.type === 'text' && typeof block.text === 'string'
+                    ? [block.text] : []).join('')
+            if (!text.trim()) throw new Error('SubAgent returned an empty final response.')
+            completed = true
+            return text
+        } finally {
+            try {
+                await runtime.sessions.end(threadId, completed ? 'ask_completed' : 'error')
+            } finally {
+                if (runtime.inbox instanceof MemoryHookContextStore) runtime.inbox.clear()
+                await runtime.saver.deleteThread(threadId)
+            }
+        }
+    })
 }

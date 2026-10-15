@@ -64,6 +64,17 @@ When the user asks to update an existing memory:
 5. Only after deletion succeeds, call \`memory_create_tool\` to insert the updated memory.
 Never create the updated memory before the old memory has been deleted.`
 
+export const delegationPrompt = `## SubAgent delegation
+
+Do the work yourself by default, especially simple tasks or work tightly coupled to the current conversation.
+After following mandatory skill routing, use \`agent_tool\` when a task has a clear independent boundary,
+can be expressed as a self-contained prompt with an explicit deliverable, and benefits from isolating
+substantial intermediate work. Honor explicit user requests to delegate.
+Include the goal, necessary background, constraints and expected deliverable in the prompt.
+Only that prompt is passed as task input; chat history is not forwarded automatically.
+Only one SubAgent runs at a time per session; multiple calls are queued sequentially.
+Wait for its result, review it, and integrate it into the overall task. You remain responsible for the final response.`
+
 export const systemPrompt = `You are a helpful assistant.
 
 ## Skills (mandatory routing)

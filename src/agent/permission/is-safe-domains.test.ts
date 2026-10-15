@@ -12,13 +12,13 @@ describe('safe URL domains', () => {
         'https://kimi.moonshot.cn/path',
         'https://api.kimi.moonshot.cn/path',
         'https://aws.amazon.com/path',
-        'ftp://github.com/path',
-        'wss://github.com/path',
     ])('matches a listed hostname or its subdomain: %s', (url) => {
         expect(isSafeDomain(url)).toBe(true)
     })
 
     it.each([
+        'ftp://github.com/path',
+        'wss://github.com/path',
         'https://untrusted.invalid',
         'https://github.com.untrusted.invalid',
         'https://evilgithub.com',
