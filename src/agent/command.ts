@@ -4,7 +4,7 @@ import { createInterface, emitKeypressEvents } from 'readline'
 import chalk from 'chalk'
 import figlet from 'figlet'
 import boxen from 'boxen'
-import { compactAgentContext, endAgentSession, runAgentStream, startAgentSession } from './agent'
+import { compactAgentContext, endAgentSession, getMcpSessionStatus, runAgentStream, startAgentSession } from './agent'
 import {
     ChatCommandContext,
     ChatCommandDefinition,
@@ -31,16 +31,18 @@ export function buildProgram(): Command {
         .command('chat')
         .description('Start an interactive chat session with the agent')
         .option('--hooks <path>', 'Hook configuration path')
-        .action((opts: { hooks?: string }) => startInteractiveChat(opts))
+        .option('--mcp-config <path>', 'MCP Server configuration path')
+        .action((opts: { hooks?: string; mcpConfig?: string }) => startInteractiveChat(opts))
 
     program
         .command('ask <message>')
         .description('Send a single message to the agent and print the response')
         .option('-t, --thread <id>', 'Thread ID for conversation history', randomUUID())
         .option('--hooks <path>', 'Hook configuration path')
-        .action(async (message: string, opts: { thread: string; hooks?: string }) => {
+        .option('--mcp-config <path>', 'MCP Server configuration path')
+        .action(async (message: string, opts: { thread: string; hooks?: string; mcpConfig?: string }) => {
             const display = createAgentDisplay(text => { process.stdout.write(text) })
-            const hookOptions = sessionHookOptions(opts.hooks, display.onHookEvent)
+            const hookOptions = sessionHookOptions(opts.hooks, display.onHookEvent, opts.mcpConfig)
             await startAgentSession(opts.thread, { ...hookOptions, reason: 'ask' })
             let completed = false
             try {
@@ -72,8 +74,9 @@ export function buildProgram(): Command {
     return program
 }
 
-function sessionHookOptions(hooksPath: string | undefined, onHookEvent: ReturnType<typeof createAgentDisplay>['onHookEvent']) {
-    return { hooksPath, onHookEvent,
+function sessionHookOptions(hooksPath: string | undefined, onHookEvent: ReturnType<typeof createAgentDisplay>['onHookEvent'], mcpConfigPath?: string) {
+    return { hooksPath, onHookEvent, mcpConfigPath,
+        onMcpDiagnostic: (message: string) => console.error(chalk.dim(message)),
         onHookDiagnostic: (message: string) => console.error(chalk.red(message)) }
 }
 
@@ -174,15 +177,16 @@ function printBanner(chatCommands: ChatCommandDefinition[]): void {
     console.log(usage + '\n')
 }
 
-async function startInteractiveChat(opts: { hooks?: string }): Promise<void> {
+async function startInteractiveChat(opts: { hooks?: string; mcpConfig?: string }): Promise<void> {
     const session = { threadId: randomUUID() }
     const display = createAgentDisplay(text => { process.stdout.write(text) })
-    const hookOptions = sessionHookOptions(opts.hooks, display.onHookEvent)
+    const hookOptions = sessionHookOptions(opts.hooks, display.onHookEvent, opts.mcpConfig)
     await startAgentSession(session.threadId, { ...hookOptions, reason: 'startup' })
     const chatCommands = createChatCommandRegistry({
         listRecentSessions: (limit) => sessionStore.listRecentSessions(limit),
         sessionExists: (threadId) => sessionStore.hasSession(threadId),
         compactContext: compactAgentContext,
+        getMcpStatus: getMcpSessionStatus,
         switchSession: async (from, to, reason) => {
             if (from === to) return
             await startAgentSession(to, { ...hookOptions, reason })

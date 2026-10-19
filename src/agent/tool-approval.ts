@@ -13,6 +13,7 @@ export async function requestToolApproval(
 ): Promise<boolean> {
     prompt.write(`\n${chalk.hex('#FFA500')('Tool')} ${request.index}/${request.total}: ${chalk.yellow(request.name)}\n`)
     prompt.write(`Arguments:\n${JSON.stringify(request.args, null, 2)}\n`)
+    if (request.mcp) prompt.write(`MCP Server: ${request.mcp.serverId}; tool: ${request.mcp.toolName}\n`)
 
     if (!prompt.interactive) {
         prompt.write('[Denied: no interactive terminal]\n')

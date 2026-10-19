@@ -1,7 +1,7 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 
-export type PermissionLevel = 'read' | 'write' | 'exec' | 'network'
+export type PermissionLevel = 'read' | 'write' | 'exec' | 'network' | 'mcp'
 
 export type PermissionDecision =
     | { kind: 'allow' }
@@ -23,7 +23,7 @@ export function permissionLevelOf(tool: unknown): PermissionLevel | undefined {
     const metadata = tool as Partial<Record<'permission_level' | 'permission_tool', unknown>>
     for (const field of ['permission_level', 'permission_tool'] as const) {
         const level = metadata[field]
-        if (level === 'read' || level === 'write' || level === 'exec' || level === 'network') return level
+        if (level === 'read' || level === 'write' || level === 'exec' || level === 'network' || level === 'mcp') return level
     }
     return undefined
 }

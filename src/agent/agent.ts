@@ -22,6 +22,9 @@ import { HookEngine, HookSessions, HookSessionOptions, SessionEndReason, HookEve
 import { HookContextStore, MemoryHookContextStore } from './hooks/context-store'
 import type { ToolEventCallback } from './tool-events'
 import { SubAgentQueue } from './subagent-queue'
+import { loadMcpConfiguration } from './mcp/config'
+import { McpManager } from './mcp/manager'
+import type { McpServerStatus } from './mcp/types'
 
 export { HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
 export type { ToolExecutionEvent, ToolEventCallback } from './tool-events'
@@ -34,6 +37,8 @@ export interface RunAgentOptions {
     onHookDiagnostic?: (message: string) => void
     onHookEvent?: HookEventCallback
     onToolEvent?: ToolEventCallback
+    mcpConfigPath?: string
+    onMcpDiagnostic?: (message: string) => void
 }
 
 // ── Model ──────────────────────────────────────────────────
@@ -60,23 +65,26 @@ const compactionModel = new ChatOpenAI({
 }) as unknown as BaseChatModel
 
 // ── Agent & Memory ────────────────────────────────────────────
-function createRuntime(isSubAgent: boolean, inheritedHooks?: HookEngine) {
+function createRuntime(isSubAgent: boolean, inheritedHooks?: HookEngine, inheritedMcp?: McpManager) {
     const inbox = isSubAgent ? new MemoryHookContextStore() : new HookContextStore()
     const saver = isSubAgent ? new MemorySaver() : checkpointer
-    const availableTools = tools as unknown as CreateAgentGraphOptions['tools']
+    const availableTools = [...tools, ...inheritedMcp?.tools ?? []] as unknown as CreateAgentGraphOptions['tools']
+    const toolset = isSubAgent ? availableTools.filter(item => item.name !== 'agent_tool') : availableTools
     const graph = createAgentGraph({
         model,
-        tools: isSubAgent ? availableTools.filter(item => item.name !== 'agent_tool') : availableTools,
+        tools: toolset,
         systemPrompt: isSubAgent ? systemPrompt : `${systemPrompt}\n\n${delegationPrompt}`,
         checkpointer: saver,
     })
-    return { graph, inbox, saver, sessions: new HookSessions(inbox, inheritedHooks), isSubAgent }
+    return { graph, inbox, saver, sessions: new HookSessions(inbox, inheritedHooks), isSubAgent, inheritedMcp, toolset }
 }
 
 type AgentRuntime = ReturnType<typeof createRuntime>
 const mainRuntime = createRuntime(false)
 const subAgentQueue = new SubAgentQueue()
 export const agent = mainRuntime.graph
+const mcpSessions = new Map<string, Promise<{ manager: McpManager; toolset: CreateAgentGraphOptions['tools'] }>>()
+const endingSessions = new Map<string, Promise<void>>()
 
 export const contextCompactionStore = new ContextCompactionStore()
 
@@ -84,11 +92,57 @@ export async function startAgentSession(
     threadId: string,
     options: RunAgentOptions & HookSessionOptions = {},
 ): Promise<void> {
-    await mainRuntime.sessions.start(threadId, options)
+    if (!threadId) throw new Error('A thread ID is required to start an agent session.')
+    options.signal?.throwIfAborted()
+    await endingSessions.get(threadId)
+    const existing = mcpSessions.get(threadId)
+    if (existing) {
+        await existing
+        options.signal?.throwIfAborted()
+        return
+    }
+    const activation = (async () => {
+        const configuration = await loadMcpConfiguration(process.cwd(), options.mcpConfigPath)
+        const manager = new McpManager(configuration, options.onMcpDiagnostic)
+        let hooksStarted = false
+        try {
+            await mainRuntime.sessions.start(threadId, options)
+            hooksStarted = true
+            await manager.start(options.signal)
+            return { manager, toolset: [...tools, ...manager.tools] as unknown as CreateAgentGraphOptions['tools'] }
+        } catch (error) {
+            try { if (hooksStarted) await mainRuntime.sessions.end(threadId, 'error') }
+            finally { await manager.close() }
+            throw error
+        }
+    })()
+    mcpSessions.set(threadId, activation)
+    try { await activation } catch (error) {
+        if (mcpSessions.get(threadId) === activation) mcpSessions.delete(threadId)
+        throw error
+    }
 }
 
 export async function endAgentSession(threadId: string, reason: SessionEndReason): Promise<void> {
-    await mainRuntime.sessions.end(threadId, reason)
+    const existing = endingSessions.get(threadId)
+    if (existing) return existing
+    const activation = mcpSessions.get(threadId)
+    if (!activation) return mainRuntime.sessions.end(threadId, reason)
+    const completion = (async () => {
+        const { manager } = await activation
+        try { await mainRuntime.sessions.end(threadId, reason) }
+        finally { await manager.close() }
+    })()
+    endingSessions.set(threadId, completion)
+    try { await completion } finally {
+        if (mcpSessions.get(threadId) === activation) mcpSessions.delete(threadId)
+        endingSessions.delete(threadId)
+    }
+}
+
+export async function getMcpSessionStatus(threadId: string): Promise<McpServerStatus[]> {
+    const activation = mcpSessions.get(threadId)
+    return activation ? (await activation).manager.getStatus() : []
 }
 
 export async function compactAgentContext(threadId: string): Promise<ContextCompactionResult> {
@@ -135,7 +189,11 @@ async function runAgent(
     signal: AbortSignal | undefined,
     options: RunAgentOptions,
 ): Promise<AgentRunResult> {
-    await runtime.sessions.start(threadId, { ...options, signal })
+    if (runtime.isSubAgent) await runtime.sessions.start(threadId, { ...options, signal })
+    else await startAgentSession(threadId, { ...options, signal })
+    const mcpSession = runtime.isSubAgent ? undefined : await mcpSessions.get(threadId)
+    const manager = runtime.inheritedMcp ?? mcpSession?.manager
+    const toolset = mcpSession?.toolset ?? runtime.toolset
     const hooks = await runtime.sessions.get(threadId)
     const cachedCompaction = runtime.isSubAgent ? undefined : await contextCompactionStore.get(threadId)
     const preprocessMessages: HistoryPreprocessor | undefined = runtime.isSubAgent ? undefined : async (messages) => {
@@ -155,10 +213,10 @@ async function runAgent(
     }
     const config = {
         configurable: { thread_id: threadId },
-        context: { preprocessMessages, hooks, onToolEvent: options.onToolEvent,
+        context: { preprocessMessages, hooks, onToolEvent: options.onToolEvent, toolset,
             hookMessages: () => runtime.inbox.get(threadId),
             runSubAgent: runtime.isSubAgent ? undefined : (prompt: string) => subAgentQueue.run(
-                threadId, () => runSubAgent(prompt, signal, options, hooks), signal,
+                threadId, () => runSubAgent(prompt, signal, options, hooks, manager), signal,
             ) },
     }
     let result: Awaited<ReturnType<typeof runGraphWithApprovals>>
@@ -197,12 +255,13 @@ async function runSubAgent(
     signal: AbortSignal | undefined,
     options: RunAgentOptions,
     hooks: HookEngine,
+    mcp?: McpManager,
 ): Promise<string> {
     // LangGraph otherwise inherits the ambient parent's checkpoint and callbacks,
     // even when a fresh thread_id is explicitly supplied to the child graph.
     return AsyncLocalStorageProviderSingleton.runWithConfig({}, async () => {
         signal?.throwIfAborted()
-        const runtime = createRuntime(true, hooks)
+        const runtime = createRuntime(true, hooks, mcp)
         const threadId = `subagent-${randomUUID()}`
         const { confirmTool, hooksPath, onHookDiagnostic, onHookEvent, onToolEvent } = options
         let completed = false

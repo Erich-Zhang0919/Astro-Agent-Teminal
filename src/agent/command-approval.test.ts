@@ -78,6 +78,16 @@ it('passes the explicit hooks path and ask lifecycle reasons', async () => {
     expect(endAgentSession).toHaveBeenCalledWith('thread', 'ask_completed')
 })
 
+it('passes MCP configuration and diagnostics to both activation and ask execution', async () => {
+    jest.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    jest.mocked(runAgentStream).mockResolvedValue({ text: 'done', modelId: 'test' })
+    await buildProgram().parseAsync(['ask', 'hello', '--thread', 'mcp-thread', '--mcp-config', 'custom-mcp.json'], { from: 'user' })
+    expect(startAgentSession).toHaveBeenCalledWith('mcp-thread', expect.objectContaining({
+        mcpConfigPath: 'custom-mcp.json', onMcpDiagnostic: expect.any(Function),
+    }))
+    expect(jest.mocked(runAgentStream).mock.calls[0][4]?.mcpConfigPath).toBe('custom-mcp.json')
+})
+
 it('does not run the agent or end an activation when SessionStart blocks ask', async () => {
     jest.mocked(startAgentSession).mockRejectedValueOnce(new Error('start denied'))
     await expect(buildProgram().parseAsync(['ask', 'hello'], { from: 'user' })).rejects.toThrow('start denied')

@@ -30,7 +30,8 @@ import { decideReadPermission } from './permission/read'
 import { decideWritePermission } from './permission/write'
 import { decideExecPermission } from './permission/exec'
 import { decideNetworkPermission } from './permission/network'
-import { permissionLevelOf } from './permission/util'
+import { permissionLevelOf, type PermissionDecision } from './permission/util'
+import { McpBinding, mcpBindingMatches, mcpMetadata } from './mcp/types'
 import { HookEngine, HookInjection, hookInjections } from './hooks/engine'
 import { emitToolEvent, ToolEventCallback } from './tool-events'
 
@@ -50,6 +51,7 @@ export interface ToolApprovalRequest {
     args: Record<string, unknown>
     index: number
     total: number
+    mcp?: McpBinding
 }
 
 export interface AgentGraphContext extends Record<string, unknown> {
@@ -58,6 +60,7 @@ export interface AgentGraphContext extends Record<string, unknown> {
     hooks?: HookEngine
     hookMessages?: () => HookInjection[] | Promise<HookInjection[]>
     onToolEvent?: ToolEventCallback
+    toolset?: AgentTool[]
 }
 
 type PendingToolUpdate =
@@ -68,7 +71,10 @@ type HookToolCall = {
     name: string
     id?: string
     args: Record<string, unknown>
+    mcp?: McpBinding
 }
+
+type ToolReview = { permission: PermissionDecision; mcp?: McpBinding }
 
 function messagesInUpdate(value: unknown): BaseMessage[] {
     if (!value || typeof value !== 'object') return []
@@ -95,6 +101,7 @@ const AgentState = new StateSchema({
     hookCalls: z.array(z.custom<HookToolCall>()).default([]),
     pendingHookMessages: z.array(z.custom<HookInjection>()).default([]),
     hookUpdates: z.array(z.custom<PendingToolUpdate>()).default([]),
+    toolReviews: z.array(z.custom<ToolReview>()).default([]),
 })
 
 // Runtime callbacks are optional and never checkpointed. Keep old callers valid.
@@ -111,9 +118,23 @@ export function createAgentGraph({
         throw new Error('The configured chat model does not support bindTools().')
     }
 
-    const modelWithTools = model.bindTools(tools)
     const systemMessage = new SystemMessage(systemPrompt)
-    const toolByName = new Map(tools.map((item) => [item.name, item]))
+    const bindings = new WeakMap<AgentTool[], {
+        model: ReturnType<NonNullable<BaseChatModel['bindTools']>>
+        byName: Map<string, AgentTool>
+        executor: ObservedToolNode
+    }>()
+    const resolveTools = (config: LangGraphRunnableConfig<AgentGraphContext>) => {
+        const available = config.context?.toolset ?? tools
+        let binding = bindings.get(available)
+        if (!binding) {
+            binding = { model: model.bindTools!(available),
+                byName: new Map(available.map(item => [item.name, item])),
+                executor: new ObservedToolNode(available) }
+            bindings.set(available, binding)
+        }
+        return binding
+    }
 
     const callModel: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
         const seen = new Set(state.messages.map((message) => message.id))
@@ -131,11 +152,38 @@ export function createAgentGraph({
         const messages = config.context?.preprocessMessages
             ? await config.context.preprocessMessages(history)
             : history
-        const response = await modelWithTools.invoke([systemMessage, ...messages], config)
+        const response = await resolveTools(config).model.invoke([systemMessage, ...messages], config)
         return { messages: [...injections, response], pendingHookMessages: [] }
     }
 
-    const reviewTools: GraphNode<typeof AgentState, AgentGraphContext> = (state) => {
+    const reviewCall = (call: ToolCall, config: LangGraphRunnableConfig<AgentGraphContext>): ToolReview => {
+        const item = resolveTools(config).byName.get(call.name)
+        if (!item) return { permission: { kind: 'block', message: 'Tool is not registered in this session.' } }
+        const level = permissionLevelOf(item)
+        const metadata = mcpMetadata(item)
+        if (level === 'mcp') {
+            if (!metadata?.isAvailable()) return { permission: { kind: 'block', message: 'MCP tool is unavailable. Re-enter the session to reconnect.' } }
+            const { serverId, toolName, bindingFingerprint } = metadata
+            return { mcp: { serverId, toolName, bindingFingerprint },
+                permission: { kind: metadata.autoApprove ? 'allow' : 'confirm' } }
+        }
+        return { permission: level === 'read' ? decideReadPermission(call.args)
+            : level === 'write' ? decideWritePermission(call.args)
+                : level === 'exec' ? (call.name === 'agent_tool'
+                    ? { kind: 'confirm' } : decideExecPermission(call.args))
+                    : level === 'network' ? decideNetworkPermission(call.args)
+                        : { kind: 'allow' } }
+    }
+
+    // Persist decisions and MCP identities before interrupts; replay keeps the same
+    // interrupt order even if a server disappears or its whitelist changes.
+    const prepareTools: GraphNode<typeof AgentState, AgentGraphContext> = (state, config) => {
+        const last = state.messages.at(-1)
+        if (!last || !isAIMessage(last)) throw new Error('Tool review requires an AI message.')
+        return { toolReviews: (last.tool_calls ?? []).map(call => reviewCall(call, config)) }
+    }
+
+    const reviewTools: GraphNode<typeof AgentState, AgentGraphContext> = (state, config) => {
         const lastMessage = state.messages[state.messages.length - 1]
         if (!lastMessage || !isAIMessage(lastMessage)) {
             throw new Error('Tool approval requires an AI message.')
@@ -145,13 +193,7 @@ export function createAgentGraph({
         // The node restarts after each interrupt. No tool can run until all
         // decisions have been collected and checkpointed.
         const decisions = toolCalls.map((call, index) => {
-            const level = permissionLevelOf(toolByName.get(call.name))
-            const permission = level === 'read' ? decideReadPermission(call.args)
-                : level === 'write' ? decideWritePermission(call.args)
-                    : level === 'exec' ? (call.name === 'agent_tool'
-                        ? { kind: 'confirm' as const } : decideExecPermission(call.args))
-                        : level === 'network' ? decideNetworkPermission(call.args)
-                            : { kind: 'allow' as const }
+            const { permission, mcp } = state.toolReviews[index] ?? reviewCall(call, config)
             if (permission.kind === 'allow') {
                 return { approved: true, blockedReason: null }
             }
@@ -164,6 +206,7 @@ export function createAgentGraph({
                 args: call.args,
                 index: index + 1,
                 total: toolCalls.length,
+                ...(mcp ? { mcp } : {}),
             }).approved === true
             return { approved, blockedReason: null }
         })
@@ -171,7 +214,8 @@ export function createAgentGraph({
             approvalDecisions: decisions.map((decision) => decision.approved),
             blockedReasons: decisions.map((decision) => decision.blockedReason),
             hookBatchId: randomUUID(),
-            hookCalls: toolCalls,
+            hookCalls: toolCalls.map((call, index) => ({ ...call,
+                ...(state.toolReviews[index]?.mcp ? { mcp: state.toolReviews[index].mcp } : {}) })),
             hookUpdates: [],
         }
     }
@@ -181,6 +225,12 @@ export function createAgentGraph({
         const reasons = [...state.blockedReasons]
         const injections = [...state.pendingHookMessages]
         const hooks = config.context?.hooks
+        for (const [index, call] of state.hookCalls.entries()) {
+            if (approvals[index] && call.mcp && !mcpBindingMatches(call.mcp, resolveTools(config).byName.get(call.name))) {
+                approvals[index] = false
+                reasons[index] = 'MCP tool binding changed or is unavailable. Request a new tool call.'
+            }
+        }
         if (hooks) {
             for (const [index, call] of state.hookCalls.entries()) {
                 if (!approvals[index]) continue
@@ -228,8 +278,17 @@ export function createAgentGraph({
             }
         }
     }
-    const toolExecutor = new ObservedToolNode(tools)
     const toolNode: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
+        const toolExecutor = resolveTools(config).executor
+        // Also guard checkpoints that already passed pre hooks before reconnection.
+        const approvalDecisions = state.approvalDecisions.map((approved, index) => {
+            const call = state.hookCalls[index]
+            return approved && (!call?.mcp || mcpBindingMatches(call.mcp, resolveTools(config).byName.get(call.name)))
+        })
+        state = { ...state, approvalDecisions,
+            blockedReasons: state.blockedReasons.map((reason, index) =>
+                state.approvalDecisions[index] && !approvalDecisions[index]
+                    ? 'MCP tool binding changed or is unavailable. Request a new tool call.' : reason) }
         const lastMessage = state.messages[state.messages.length - 1]
         if (!lastMessage || !isAIMessage(lastMessage)) {
             throw new Error('Tool execution requires an AI message.')
@@ -259,7 +318,8 @@ export function createAgentGraph({
             })
         }
         if (rejectedMessages.length === toolCalls.length) {
-            return { hookUpdates: [{ kind: 'update' as const,
+            return { approvalDecisions, blockedReasons: state.blockedReasons,
+                hookUpdates: [{ kind: 'update' as const,
                 value: { messages: rejectedMessages } }] }
         }
 
@@ -306,7 +366,8 @@ export function createAgentGraph({
                 }]
             }
         }
-        return { hookUpdates: updates.map((update): PendingToolUpdate => isCommand(update)
+        return { approvalDecisions, blockedReasons: state.blockedReasons,
+            hookUpdates: updates.map((update): PendingToolUpdate => isCommand(update)
             ? { kind: 'command', value: { ...update.toJSON(), graph: update.graph } }
             : { kind: 'update', value: update as Record<string, unknown> }) }
     }
@@ -361,19 +422,21 @@ export function createAgentGraph({
         if (!updates.some(isCommand)) return { ...updates[0], ...hookState }
         // ToolNode supports mixed update/Command arrays, although GraphNode's
         // declared return type omits them in this version of LangGraph.
-        return [...updates, hookState] as Awaited<ReturnType<typeof toolExecutor.invoke>>
+        return [...updates, hookState] as Awaited<ReturnType<ObservedToolNode['invoke']>>
     }
 
     return new StateGraph(AgentState, AgentContext)
         .addNode('model_request', callModel)
+        .addNode('prepare_tools', prepareTools)
         .addNode('review_tools', reviewTools)
         .addNode('pre_tool_hooks', preToolHooks)
         .addNode('tools', toolNode)
         .addNode('post_tool_hooks', postToolHooks)
         .addEdge(START, 'model_request')
         .addConditionalEdges('model_request', (state) =>
-            toolsCondition(state) === 'tools' ? 'review_tools' : END,
-        ['review_tools', END])
+            toolsCondition(state) === 'tools' ? 'prepare_tools' : END,
+        ['prepare_tools', END])
+        .addEdge('prepare_tools', 'review_tools')
         .addEdge('review_tools', 'pre_tool_hooks')
         .addEdge('pre_tool_hooks', 'tools')
         .addEdge('tools', 'post_tool_hooks')

@@ -3,6 +3,7 @@ import { isAIMessage } from '@langchain/core/messages'
 import { randomUUID } from 'node:crypto'
 import type { AgentGraphContext, createAgentGraph, ToolApprovalRequest } from './agent-graph'
 import { collectAgentStream, TokenUsage } from './context-usage'
+import { mcpBindingMatches } from './mcp/types'
 
 type AgentGraph = ReturnType<typeof createAgentGraph>
 
@@ -44,8 +45,11 @@ export async function runGraphWithApprovals(
     }
     const pendingApproval = async () => approvalFromSnapshot(await graph.getState(config))
 
-    const decision = async (request: ToolApprovalRequest): Promise<boolean> =>
-        (await confirmTool?.(request)) === true
+    const decision = async (request: ToolApprovalRequest): Promise<boolean> => {
+        if (request.mcp && !mcpBindingMatches(request.mcp,
+            config.context?.toolset?.find(item => item.name === request.name))) return false
+        return (await confirmTool?.(request)) === true
+    }
 
     const runUntilSettled = async (initialInput: Parameters<AgentGraph['stream']>[0]) => {
         let input = initialInput

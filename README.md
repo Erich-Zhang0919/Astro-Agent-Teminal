@@ -99,6 +99,75 @@ API callers can receive the same execution notifications using `onToolEvent` in
 `runAgentStream` options and hook notifications using `onHookEvent` in session
 options. These notifications are separate from reply tokens.
 
+## MCP Servers
+
+Astro can discover and call tools from local stdio and remote Streamable HTTP MCP
+Servers. Put configuration in `.astro/mcp.json` in your working directory, or use
+`astro chat --mcp-config <path>` / `astro ask "message" --mcp-config <path>`.
+An absent default file leaves MCP disabled. An explicit missing file, invalid JSON
+or invalid configuration stops session startup. The source file
+`src/agent/mcp/mcp.json` is an example and is never loaded automatically.
+
+```json
+{
+  "mcpServers": {
+    "playwright": {
+      "command": "npx",
+      "args": ["-y", "@playwright/mcp@0.0.83"],
+      "autoApprove": ["browser_snapshot"]
+    },
+    "internal": {
+      "transport": "streamable-http",
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "Bearer ${INTERNAL_MCP_TOKEN}" }
+    }
+  }
+}
+```
+
+The example pins Playwright MCP to a fixed version; no external programs run until configured.
+Configured stdio commands run as local extensions when entering a session, before
+tool approval, without shell interpolation. They receive the SDK's base environment
+plus explicit `env` values, not all of Astro's environment. `env` and HTTP `headers`
+support `${ENV_VAR}` substitutions. A missing variable disables that Server and
+reports its name. Relative `cwd` values resolve against the configuration file;
+otherwise stdio runs in the session's working directory.
+
+Each Server supports `enabled` (default `true`), `autoApprove` (default `[]`),
+`connectTimeoutMs` (default 15000), and `callTimeoutMs` (default 60000). Connections
+and initial discovery share the connection deadline. Static Headers can carry a
+Bearer token or API key; OAuth login and legacy SSE transports are not supported.
+
+Tool names are prefixed, for example `mcp__playwright__browser_navigate`. Each MCP
+call requires approval unless its **original** tool name is in that Server's
+`autoApprove` array; `['*']` approves all tools on that Server. Non-interactive
+calls requiring approval are denied. Server-provided read-only annotations do not
+grant permission. Approved and whitelisted calls still run both tool hooks.
+
+Use `/mcp` to inspect Server status and `/mcp tools [server]` to inspect tools.
+Configuration and tool catalogs stay fixed during an activation. Use `/new`,
+switch away and back, or restart chat to reload. One failed connection leaves the
+built-in tools and other successful Servers available. Disconnected Servers retry
+only on the next activation. Tool calls are never automatically replayed after a
+timeout or disconnect; their effects may already have occurred.
+
+MCP connections belong to parent sessions. Children share the parent's tools,
+approval policy and connection, so they can continue in the same browser. Separate
+parent sessions use independent connections. Calls to the same Server are serialized.
+ESC cancels current and queued requests without closing a usable connection.
+Normal exit, switching, and failed activation clean up owned connections. Previously
+approved checkpoint calls are blocked if their MCP target or tool binding changed.
+
+Text and structured results enter the existing tool-output pipeline. Images, audio
+and embedded blobs are saved under `tool_output` and returned as paths with MIME
+types. Resource links are returned without fetching them. The text model does not
+receive binary Base64 or image content. Resources and Prompts are not exposed.
+
+API callers use `mcpConfigPath` and `onMcpDiagnostic` in `runAgentStream` /
+`startAgentSession` options, `getMcpSessionStatus(threadId)` for inspection, and
+`endAgentSession` to release connections. Direct use of the exported low-level
+`agent` graph retains its built-in tools unless a runtime `context.toolset` is supplied.
+
 ## SubAgent delegation
 
 The main agent can call `agent_tool` with only `{ "prompt": "self-contained task" }`.

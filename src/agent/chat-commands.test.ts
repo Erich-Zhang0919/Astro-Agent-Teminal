@@ -7,6 +7,21 @@ import {
 } from './chat-commands'
 
 describe('ChatCommandRegistry', () => {
+    it('inspects server status and filters tools without entering the model', async () => {
+        const registry = createChatCommandRegistry({
+            listRecentSessions: jest.fn(), sessionExists: jest.fn(), compactContext: jest.fn(),
+            getMcpStatus: jest.fn(async () => [{ serverId: 'local', transport: 'stdio' as const,
+                status: 'connected' as const, tools: [{ name: 'mcp__local__counter', originalName: 'counter', description: 'Increment' }] }]),
+        })
+        const { context, writeLine } = createContext()
+        await registry.dispatch('/mcp tools local', context)
+        expect(writeLine).toHaveBeenCalledWith('local: connected (stdio, 1 tools)')
+        expect(writeLine).toHaveBeenCalledWith('  mcp__local__counter [counter]: Increment')
+        await registry.dispatch('/mcp tools missing', context)
+        expect(writeLine).toHaveBeenCalledWith('MCP Server not found: missing', 'error')
+        await registry.dispatch('/mcp reload', context)
+        expect(writeLine).toHaveBeenCalledWith('Usage: /mcp [tools [server]]', 'error')
+    })
     const createContext = (threadId = 'initial-thread') => {
         const session: ChatSessionState = { threadId }
         const writeLine = jest.fn()
@@ -38,6 +53,7 @@ describe('ChatCommandRegistry', () => {
         const registry = createRegistry()
 
         expect(registry.suggest('/').map(({ name }) => name)).toEqual([
+            'mcp',
             'new',
             'compact',
             'sessions',
@@ -90,7 +106,7 @@ describe('ChatCommandRegistry', () => {
 
         await expect(registry.dispatch('/missing', context)).resolves.toBe(true)
         expect(writeLine).toHaveBeenCalledWith(
-            'Unknown command: /missing. Available commands: /new, /compact, /sessions, /rewind',
+            'Unknown command: /missing. Available commands: /mcp, /new, /compact, /sessions, /rewind',
             'error',
         )
     })

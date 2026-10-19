@@ -49,13 +49,17 @@ jest.mock('./tools/web_search', () => {
 })
 
 import { MemorySaver } from '@langchain/langgraph'
-import { agent, contextCompactionStore, endAgentSession, runAgentStream, startAgentSession } from './agent'
+import { agent, contextCompactionStore, endAgentSession, getMcpSessionStatus, runAgentStream, startAgentSession } from './agent'
 import { checkpointer, db } from './db'
 import { HookEngine } from './hooks/engine'
 import { MemoryHookContextStore } from './hooks/context-store'
 import { delegationPrompt, systemPrompt } from './prompt'
 import { tools } from './tools'
 import * as toolRegistry from './tools'
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+import { createServer } from 'node:http'
 
 const parents = new Set<string>()
 let parentCounter = 0
@@ -93,6 +97,110 @@ afterEach(async () => {
 })
 
 afterAll(() => db.close())
+
+const playwrightSmoke = process.env.ASTRO_PLAYWRIGHT_EXECUTABLE ? it : it.skip
+playwrightSmoke('real Playwright MCP shares a browser across parent and child', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'astro-playwright-smoke-'))
+    const server = createServer((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'text/html' })
+        res.end('<html><head><title>Astro MCP acceptance</title></head><body><h1>Shared browser session</h1></body></html>')
+    })
+    await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve) })
+    const port = (server.address() as { port: number }).port
+    const path = join(temp, 'mcp.json')
+    await writeFile(path, JSON.stringify({ mcpServers: { playwright: {
+        command: 'npx', cwd: temp, args: ['-y', '@playwright/mcp@0.0.83', '--headless', '--isolated',
+            '--executable-path', process.env.ASTRO_PLAYWRIGHT_EXECUTABLE, '--output-dir', temp],
+        env: { npm_config_registry: 'https://registry.npmjs.org', npm_config_cache: '/private/tmp/astro-mcp-npm-cache' },
+        connectTimeoutMs: 120_000, callTimeoutMs: 30_000,
+    } } }))
+    const navigate = 'mcp__playwright__browser_navigate'
+    const snapshot = 'mcp__playwright__browser_snapshot'
+    const screenshot = 'mcp__playwright__browser_take_screenshot'
+    const confirmations: string[] = []
+    mockRespond.mockImplementation(async (messages, options) => {
+        const output = results(messages)
+        for (const result of output) expect(result).not.toMatchObject({ status: 'error' })
+        if (child(options)) {
+            if (!output.length) return call(snapshot, {})
+            expect(String(output[0].content)).toContain('Astro MCP acceptance')
+            if (output.length === 1) return call(screenshot, { type: 'png', scale: 'css', filename: 'astro-acceptance.png' })
+            expect(String(output[1].content)).toMatch(/Attachment|astro-acceptance\.png/)
+            return new AIMessage('Child inspected the shared page and saved a screenshot.')
+        }
+        if (!output.length) return call(navigate, { url: `http://127.0.0.1:${port}` })
+        if (output.length === 1) return delegate('Inspect the open page and save its screenshot.')
+        return new AIMessage('Browser acceptance complete.')
+    })
+    const id = parentId()
+    try {
+        const diagnostics: string[] = []
+        await startAgentSession(id, { mcpConfigPath: path, onMcpDiagnostic: message => diagnostics.push(message) })
+        expect((await getMcpSessionStatus(id))[0].status).toBe('connected')
+        const result = await runAgentStream('Browser acceptance', () => undefined, id, undefined, {
+            confirmTool: async request => { confirmations.push(request.name); return true },
+        })
+        expect(result.text).toContain('Browser acceptance complete')
+        expect(confirmations).toEqual([navigate, 'agent_tool', snapshot, screenshot])
+        const image = await readFile(join(temp, 'astro-acceptance.png'))
+        expect(image.subarray(1, 4).toString()).toBe('PNG')
+    } finally {
+        await endAgentSession(id, 'exit')
+        server.closeAllConnections()
+        await new Promise<void>(resolve => server.close(() => resolve()))
+        await rm(temp, { recursive: true, force: true })
+    }
+}, 150_000)
+
+it('shares an MCP connection with the child, keeps it alive, and isolates another parent', async () => {
+    const temp = await mkdtemp(join(tmpdir(), 'astro-mcp-child-'))
+    const path = join(temp, 'mcp.json')
+    const fixture = resolve(__dirname, 'mcp/fixtures/server.cjs')
+    const pidFile = join(temp, 'pid')
+    await writeFile(path, JSON.stringify({ mcpServers: { fixture: {
+        command: process.execPath, args: [fixture], env: { MCP_FIXTURE_PID_FILE: pidFile },
+        autoApprove: ['counter'], connectTimeoutMs: 5000,
+    } } }))
+    const counterName = 'mcp__fixture__counter'
+    const childIds = new Set<string>()
+    mockRespond.mockImplementation(async (messages, options) => {
+        expect(options.testTools.some(item => item.name === counterName)).toBe(true)
+        const output = results(messages)
+        if (child(options)) {
+            childIds.add(options.configurable.thread_id)
+            expect(options.testTools.some(item => item.name === 'agent_tool')).toBe(false)
+            return output.length ? new AIMessage(`Child counter ${output.at(-1)!.content}`) : call(counterName, {})
+        }
+        if (!output.length) return delegate('Increment the shared MCP counter')
+        if (output.at(-1)!.name === 'agent_tool') return call(counterName, {})
+        return new AIMessage(`Parent counter ${output.at(-1)!.content}`)
+    })
+    try {
+        const parent = parentId()
+        const confirm = jest.fn(async () => true)
+        const result = await runAgentStream('Delegate counter', () => undefined, parent, undefined,
+            { mcpConfigPath: path, confirmTool: confirm })
+        expect(result.text).toContain('Parent counter 2')
+        expect(confirm).toHaveBeenCalledTimes(1) // Delegation only; MCP is whitelisted.
+        expect(childIds.size).toBe(1)
+        const pid = Number(await readFile(pidFile, 'utf8'))
+        expect(() => process.kill(pid, 0)).not.toThrow()
+        expect((await getMcpSessionStatus(parent))[0].status).toBe('connected')
+        const mcpHooks = hookRun.mock.calls.map(([input]) => input as HookInput)
+            .filter(input => 'tool' in input && input.tool.name === counterName)
+        expect(mcpHooks.map(input => input.event)).toEqual(['PreToolUse', 'PostToolUse', 'PreToolUse', 'PostToolUse'])
+
+        mockRespond.mockImplementation(async (messages) => results(messages).length
+            ? new AIMessage(`Independent counter ${results(messages).at(-1)!.content}`) : call(counterName, {}))
+        const independent = await runAgentStream('Counter', () => undefined, parentId(), undefined, { mcpConfigPath: path })
+        expect(independent.text).toContain('Independent counter 1')
+        await endAgentSession(parent, 'exit')
+        expect(() => process.kill(pid, 0)).toThrow()
+    } finally {
+        for (const id of parents) await endAgentSession(id, 'exit')
+        await rm(temp, { recursive: true, force: true })
+    }
+})
 
 it('isolates child input/tools/configuration and returns only the final answer before the parent continues', async () => {
     const id = parentId()

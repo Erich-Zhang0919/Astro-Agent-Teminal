@@ -3,6 +3,7 @@ import Table from 'cli-table3'
 import stringWidth from 'string-width'
 import type { SessionSummary } from './session-store'
 import type { ContextCompactionResult } from './context-usage'
+import type { McpServerStatus } from './mcp/types'
 
 export interface ChatSessionState {
     threadId: string
@@ -29,6 +30,7 @@ export interface ChatCommandDependencies {
     createThreadId?: () => string
     now?: () => Date
     switchSession?: (from: string, to: string, reason: 'new' | 'resume') => Promise<void>
+    getMcpStatus?: (threadId: string) => Promise<McpServerStatus[]>
 }
 
 export class ChatCommandRegistry {
@@ -87,8 +89,29 @@ export function createChatCommandRegistry({
     createThreadId = randomUUID,
     now = () => new Date(),
     switchSession,
+    getMcpStatus,
 }: ChatCommandDependencies): ChatCommandRegistry {
     return new ChatCommandRegistry()
+        .register({
+            name: 'mcp', description: 'Inspect MCP Servers and tools', usage: '/mcp [tools [server]]',
+            execute: async (rawArgs, context) => {
+                const args = rawArgs ? rawArgs.split(/\s+/) : []
+                if (args.length > 2 || (args.length && args[0] !== 'tools')) {
+                    context.writeLine('Usage: /mcp [tools [server]]', 'error')
+                    return
+                }
+                const statuses = await getMcpStatus?.(context.session.threadId) ?? []
+                if (!statuses.length) { context.writeLine('No MCP Servers configured.'); return }
+                const selected = args[1] ? statuses.filter(item => item.serverId === args[1]) : statuses
+                if (!selected.length) { context.writeLine(`MCP Server not found: ${args[1]}`, 'error'); return }
+                for (const item of selected) {
+                    context.writeLine(`${item.serverId}: ${item.status} (${item.transport}, ${item.tools.length} tools)${item.error ? ` — ${item.error}` : ''}`)
+                    if (args[0] === 'tools') for (const tool of item.tools) {
+                        context.writeLine(`  ${tool.name} [${tool.originalName}]: ${tool.description}`)
+                    }
+                }
+            },
+        })
         .register({
             name: 'new',
             description: 'Start a new chat session',
