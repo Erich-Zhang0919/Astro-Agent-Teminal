@@ -26,6 +26,17 @@ The file and all three model fields are required. Missing or invalid configurati
 stops startup with an error showing the configuration path and fields to fix.
 Model credentials are read from this file; `MOONSHOT_API_KEY` is no longer used.
 
+Context usage queries `<baseURL>/models` for the actual response model ID and
+reads `context_length` or `context_window` (input + output capacity). If metadata
+is missing or unavailable, documented DeepSeek, MiniMax, GLM, Qwen and MiMo
+limits are used for recognized official API hosts and exact model IDs. The
+fallback catalog and official source links are in `src/agent/model-context-limits.ts`
+(checked 2026-10-20); K/M-only specifications use conservative decimal counts.
+Live metadata always wins. Unknown models and third-party endpoints remain
+`unknown` without metadata, so percentage warnings and automatic compaction
+cannot be triggered from a guessed limit. Fallback entries do not imply that a
+retired model is still available.
+
 ## Scripts
 
 - `pnpm dev`: run `src/index.ts` in watch mode.

@@ -1,6 +1,9 @@
+import { getFallbackContextWindow } from './model-context-limits'
+
 interface ModelMetadata {
     id?: unknown
     context_length?: unknown
+    context_window?: unknown
 }
 
 interface ModelsResponse {
@@ -27,9 +30,9 @@ export async function getModelContextWindow(
         if (contextWindow === undefined) {
             modelCache.delete(getModelsEndpoint(options.baseUrl))
         }
-        return contextWindow
+        return contextWindow ?? getFallbackContextWindow(modelId, options.baseUrl)
     } catch {
-        return undefined
+        return getFallbackContextWindow(modelId, options.baseUrl)
     }
 }
 
@@ -76,9 +79,12 @@ async function requestModels(endpoint: string, apiKey: string): Promise<Map<stri
     for (const rawModel of body.data as ModelMetadata[]) {
         if (!rawModel || typeof rawModel !== 'object') continue
         if (typeof rawModel.id !== 'string') continue
-        if (!isContextWindow(rawModel.context_length)) continue
+        const contextWindow = isContextWindow(rawModel.context_length)
+            ? rawModel.context_length
+            : rawModel.context_window
+        if (!isContextWindow(contextWindow)) continue
 
-        models.set(rawModel.id, rawModel.context_length)
+        models.set(rawModel.id, contextWindow)
     }
 
     return models
