@@ -1,9 +1,7 @@
-import { ChatOpenAI } from '@langchain/openai'
 import { randomUUID } from 'node:crypto'
 import { isAIMessage, type BaseMessage } from '@langchain/core/messages'
 import { AsyncLocalStorageProviderSingleton } from '@langchain/core/singletons'
 import { MemorySaver } from '@langchain/langgraph'
-import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { tools } from './tools'
 import { checkpointer, sessionStore } from './session-store'
 import {
@@ -14,6 +12,7 @@ import {
     isCompactionRecordValidForMessages,
 } from './context-usage'
 import { getModelContextWindow } from './model-metadata'
+import { createModels } from './model'
 import { createAgentGraph, CreateAgentGraphOptions, HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
 import { ContextCompactionStore } from './context-compaction-store'
 import { systemPrompt, delegationPrompt } from './prompt'
@@ -41,28 +40,7 @@ export interface RunAgentOptions {
     onMcpDiagnostic?: (message: string) => void
 }
 
-// ── Model ──────────────────────────────────────────────────
-const MODEL_ID = 'kimi-k2.6'
-const API_BASE_URL = 'https://api.moonshot.cn/v1'
-
-const sharedModelOptions = {
-    model: MODEL_ID,
-    apiKey: process.env.MOONSHOT_API_KEY,
-    configuration: { baseURL: API_BASE_URL },
-    modelKwargs: { thinking: { type: 'disabled' } },  // 关闭 thinking
-}
-
-// Normalize the integrations' parallel CJS/ESM declaration trees at this boundary.
-const model = new ChatOpenAI({
-    ...sharedModelOptions,
-    streaming: true,
-    streamUsage: true,
-}) as unknown as BaseChatModel
-
-const compactionModel = new ChatOpenAI({
-    ...sharedModelOptions,
-    streaming: false,
-}) as unknown as BaseChatModel
+const { config: modelConfig, model, compactionModel } = createModels()
 
 // ── Agent & Memory ────────────────────────────────────────────
 function createRuntime(isSubAgent: boolean, inheritedHooks?: HookEngine, inheritedMcp?: McpManager) {
@@ -222,7 +200,7 @@ async function runAgent(
     let result: Awaited<ReturnType<typeof runGraphWithApprovals>>
     try {
         result = await runGraphWithApprovals(
-            runtime.graph, userMessage, onToken, config, MODEL_ID, signal, options.confirmTool,
+            runtime.graph, userMessage, onToken, config, modelConfig.model, signal, options.confirmTool,
         )
     } finally {
         // Only acknowledge inbox messages that made it into a durable checkpoint.
@@ -236,15 +214,15 @@ async function runAgent(
 
     if (signal?.aborted || runtime.isSubAgent) return result
 
-    const configuredContextWindow = getModelContextWindow(MODEL_ID, {
-        apiKey: process.env.MOONSHOT_API_KEY,
-        baseUrl: API_BASE_URL,
+    const configuredContextWindow = getModelContextWindow(modelConfig.model, {
+        apiKey: modelConfig.apiKey,
+        baseUrl: modelConfig.baseURL,
     })
-    const contextWindow = result.modelId === MODEL_ID
+    const contextWindow = result.modelId === modelConfig.model
         ? await configuredContextWindow
         : await getModelContextWindow(result.modelId, {
-            apiKey: process.env.MOONSHOT_API_KEY,
-            baseUrl: API_BASE_URL,
+            apiKey: modelConfig.apiKey,
+            baseUrl: modelConfig.baseURL,
         })
 
     return { ...result, contextWindow }

@@ -40,6 +40,12 @@ jest.mock('./db', () => {
     return { checkpointer, db }
 })
 jest.mock('./model-metadata', () => ({ getModelContextWindow: jest.fn(async () => 100_000) }))
+jest.mock('./model', () => {
+    const actual = jest.requireActual('./model')
+    return { ...actual, createModels: () => actual.createModels({
+        model: 'test-model', apiKey: 'test-key', baseURL: 'https://example.com/v1',
+    }) }
+})
 jest.mock('./tools/web_search', () => {
     const { tool } = require('@langchain/core/tools')
     const { z } = require('zod')

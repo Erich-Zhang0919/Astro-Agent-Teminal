@@ -8,6 +8,24 @@ Node.js + TypeScript development environment using pnpm and Jest.
 pnpm install
 ```
 
+Create `~/.astro/astro.json` in your user home directory before starting Astro:
+
+```json
+{
+  "model": {
+    "model": "kimi-k2.6",
+    "apiKey": "your_moonshot_api_key_here",
+    "baseURL": "https://api.moonshot.cn/v1"
+  }
+}
+```
+
+The path uses the operating system's home directory on Windows, macOS and Linux
+(for example, `C:\Users\<user>\.astro\astro.json` on Windows).
+The file and all three model fields are required. Missing or invalid configuration
+stops startup with an error showing the configuration path and fields to fix.
+Model credentials are read from this file; `MOONSHOT_API_KEY` is no longer used.
+
 ## Scripts
 
 - `pnpm dev`: run `src/index.ts` in watch mode.
