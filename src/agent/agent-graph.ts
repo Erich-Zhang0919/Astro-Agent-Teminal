@@ -6,6 +6,7 @@ import {
     BaseMessage,
     HumanMessage,
     isAIMessage,
+    isHumanMessage,
     SystemMessage,
     ToolMessage,
 } from '@langchain/core/messages'
@@ -34,6 +35,7 @@ import { permissionLevelOf, type PermissionDecision } from './permission/util'
 import { McpBinding, mcpBindingMatches, mcpMetadata } from './mcp/types'
 import { HookEngine, HookInjection, hookInjections } from './hooks/engine'
 import { emitToolEvent, ToolEventCallback } from './tool-events'
+import { AGENT_RECURSION_LIMIT, MAX_TOOL_ROUNDS } from './agent-limits'
 
 // The package exports this subpath at runtime, but the project's legacy
 // `moduleResolution: node` setting cannot discover its conditional types entry.
@@ -102,7 +104,27 @@ const AgentState = new StateSchema({
     pendingHookMessages: z.array(z.custom<HookInjection>()).default([]),
     hookUpdates: z.array(z.custom<PendingToolUpdate>()).default([]),
     toolReviews: z.array(z.custom<ToolReview>()).default([]),
+    finishRequested: z.boolean().default(false),
 })
+
+function toolRoundsInCurrentTurn(messages: BaseMessage[]): number {
+    let rounds = 0
+    for (let index = messages.length - 1; index >= 0; index--) {
+        const message = messages[index]
+        // Hook injections use HumanMessage too, but do not start a new user turn.
+        if (isHumanMessage(message) && !message.id?.startsWith('hook:')) break
+        if (isAIMessage(message) && message.tool_calls?.length) rounds++
+    }
+    return rounds
+}
+
+const FINAL_ANSWER_PROMPT = new SystemMessage(
+    'The tool budget for this request has been reached. Make no further tool calls. '
+    + 'Answer the user now using the results already available. Clearly distinguish verified facts '
+    + 'from missing information, and explain any limits. Do not invent results or claim unexecuted tools succeeded.',
+)
+
+const BUDGET_FALLBACK = '本次查询已达到工具调用上限，已停止继续调用工具。现有信息不足以生成完整答复，请缩小问题范围后重试。'
 
 // Runtime callbacks are optional and never checkpointed. Keep old callers valid.
 const AgentContext = z.object({}).passthrough()
@@ -152,8 +174,15 @@ export function createAgentGraph({
         const messages = config.context?.preprocessMessages
             ? await config.context.preprocessMessages(history)
             : history
-        const response = await resolveTools(config).model.invoke([systemMessage, ...messages], config)
-        return { messages: [...injections, response], pendingHookMessages: [] }
+        const finish = state.finishRequested || toolRoundsInCurrentTurn(state.messages) >= MAX_TOOL_ROUNDS
+        // Invoke the unbound model to actually remove tools from the final request.
+        let response: AIMessage = finish
+            ? await model.invoke([systemMessage, ...messages, FINAL_ANSWER_PROMPT], config)
+            : await resolveTools(config).model.invoke([systemMessage, ...messages], config)
+        if (finish && (response.tool_calls?.length || !response.text.trim())) {
+            response = new AIMessage(BUDGET_FALLBACK)
+        }
+        return { messages: [...injections, response], pendingHookMessages: [], finishRequested: false }
     }
 
     const reviewCall = (call: ToolCall, config: LangGraphRunnableConfig<AgentGraphContext>): ToolReview => {
@@ -442,4 +471,5 @@ export function createAgentGraph({
         .addEdge('tools', 'post_tool_hooks')
         .addEdge('post_tool_hooks', 'model_request')
         .compile({ checkpointer })
+        .withConfig({ recursionLimit: AGENT_RECURSION_LIMIT })
 }

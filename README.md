@@ -16,15 +16,25 @@ Create `~/.astro/astro.json` in your user home directory before starting Astro:
     "model": "kimi-k2.6",
     "apiKey": "your_moonshot_api_key_here",
     "baseURL": "https://api.moonshot.cn/v1"
+  },
+  "env": {
+    "TAVILY_API_KEY": "your_tavily_api_key_here"
   }
 }
 ```
 
 The path uses the operating system's home directory on Windows, macOS and Linux
 (for example, `C:\Users\<user>\.astro\astro.json` on Windows).
-The file and all three model fields are required. Missing or invalid configuration
+The file, all three model fields and `env.TAVILY_API_KEY` are required. Missing or invalid configuration
 stops startup with an error showing the configuration path and fields to fix.
 Model credentials are read from this file; `MOONSHOT_API_KEY` is no longer used.
+Web search reads `env.TAVILY_API_KEY` from this file and passes it directly to
+Tavily; it no longer uses `TAVILY_API_KEY` from `.env` or the process environment.
+
+The database is stored at `~/.astro/.data/checkpointer.db`, using the operating
+system's home directory. Startup creates the directory and database if missing
+and reuses the database on subsequent runs. Existing project-local `.data`
+databases are not migrated automatically.
 
 Context usage queries `<baseURL>/models` for the actual response model ID and
 reads `context_length` or `context_window` (input + output capacity). If metadata
@@ -53,6 +63,14 @@ retired model is still available.
 4. Run `pnpm typecheck` and `pnpm build` when changing public APIs.
 
 ## Agent hooks
+
+Each user request can use up to 12 tool-call rounds (parallel calls count as one
+round). The graph has a 100-step limit to accommodate permission and hook nodes.
+At the tool budget, Astro asks the model to answer using existing results with
+tools disabled. A graph step-limit error also triggers a final answer instead of
+continuing pending searches. A new question closes any previous tool call that
+has not yet reached permission review; pending approvals and hook recovery retain
+their normal behavior.
 
 The agent loads `.astro/hooks.json` from the current working directory when entering
 a session. Use `astro chat --hooks <path>` or `astro ask "message" --hooks <path>` to

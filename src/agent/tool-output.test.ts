@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises'
 import * as os from 'os'
 import * as path from 'path'
+import { homedir } from 'node:os'
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
 import { AIMessage, BaseMessage, HumanMessage, ToolMessage } from '@langchain/core/messages'
 import { tool } from '@langchain/core/tools'
@@ -11,6 +12,10 @@ import { maybePersistedOutput, tools } from './tools'
 import { permissionLevelOf } from './permission/util'
 
 jest.mock('./tools/web_search', () => ({ webSearchTool: {} }))
+jest.mock('node:os', () => {
+    const actual = jest.requireActual('node:os')
+    return { ...actual, homedir: jest.fn(actual.homedir) }
+})
 
 it.each(['search', 'web_fetch'])('registers %s as a network tool', (name) => {
     expect(permissionLevelOf(tools.find((entry) => entry.name === name))).toBe('network')
@@ -18,9 +23,13 @@ it.each(['search', 'web_fetch'])('registers %s as a network tool', (name) => {
 
 let tmpDir: string
 let originalCwd: string
+let outputDir: string
 
 beforeEach(async () => {
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'tool-output-test-'))
+    const home = path.join(tmpDir, 'home')
+    jest.mocked(homedir).mockReturnValue(home)
+    outputDir = path.join(home, '.astro', '.tool_output')
     originalCwd = process.cwd()
     process.chdir(tmpDir)
 })
@@ -35,18 +44,19 @@ describe('maybePersistedOutput', () => {
     it.each([0, 49_999, 50_000])('returns %i characters without creating a directory', async (length) => {
         const content = 'x'.repeat(length)
         expect(await maybePersistedOutput(content, 'short')).toBe(content)
-        await expect(fs.stat('tool_output')).rejects.toMatchObject({ code: 'ENOENT' })
+        await expect(fs.stat(outputDir)).rejects.toMatchObject({ code: 'ENOENT' })
     })
 
     it('persists 50001 characters in full and returns the exact preview format', async () => {
         const content = 'x'.repeat(50_001)
         const result = await maybePersistedOutput(content, 'boundary')
 
-        expect(await fs.readFile('tool_output/tool_output_boundary.txt', 'utf-8')).toBe(content)
+        expect(await fs.readFile(path.join(outputDir, 'tool_output_boundary.txt'), 'utf-8')).toBe(content)
+        await expect(fs.stat('tool_output')).rejects.toMatchObject({ code: 'ENOENT' })
         expect(result).toBe([
             '<persisted-output>',
             'Output too large (48.8KB).',
-            'Full output saved to: ./tool_output/tool_output_boundary.txt',
+            `Full output saved to: ${path.join(outputDir, 'tool_output_boundary.txt')}`,
             'If you need the complete content, it is recommended to read it in segments',
             '',
             'Preview (first 2KB):',
@@ -59,11 +69,11 @@ describe('maybePersistedOutput', () => {
     it('uses character length for Chinese content and stores complete UTF-8 text', async () => {
         const shortContent = '中文'.repeat(25_000)
         expect(await maybePersistedOutput(shortContent, 'chinese')).toBe(shortContent)
-        await expect(fs.stat('tool_output')).rejects.toMatchObject({ code: 'ENOENT' })
+        await expect(fs.stat(outputDir)).rejects.toMatchObject({ code: 'ENOENT' })
 
         const longContent = shortContent + '末'
         const result = await maybePersistedOutput(longContent, 'chinese')
-        expect(await fs.readFile('tool_output/tool_output_chinese.txt', 'utf-8')).toBe(longContent)
+        expect(await fs.readFile(path.join(outputDir, 'tool_output_chinese.txt'), 'utf-8')).toBe(longContent)
         expect(result).toContain('Output too large (48.8KB).')
         expect(result).toContain(`Preview (first 2KB):\n${'中文'.repeat(1000)}\n...`)
     })
@@ -76,13 +86,13 @@ describe('maybePersistedOutput', () => {
         const result = await maybePersistedOutput(updatedContent, callId)
         const filename = `tool_output_${encodeURIComponent(callId)}.txt`
 
-        expect(await fs.readdir('tool_output')).toEqual([filename])
-        expect(await fs.readFile(path.join('tool_output', filename), 'utf-8')).toBe(updatedContent)
-        expect(result).toContain(`Full output saved to: ./tool_output/${filename}`)
+        expect(await fs.readdir(outputDir)).toEqual([filename])
+        expect(await fs.readFile(path.join(outputDir, filename), 'utf-8')).toBe(updatedContent)
+        expect(result).toContain(`Full output saved to: ${path.join(outputDir, filename)}`)
     })
 
     it('propagates write failures instead of claiming the file was saved', async () => {
-        await fs.mkdir('tool_output/tool_output_failure.txt', { recursive: true })
+        await fs.mkdir(path.join(outputDir, 'tool_output_failure.txt'), { recursive: true })
         await expect(maybePersistedOutput('x'.repeat(50_001), 'failure')).rejects.toMatchObject({
             code: 'EISDIR',
         })
@@ -151,9 +161,9 @@ describe('toolNode output persistence', () => {
         expect(messages[1].content).toContain('<persisted-output>')
         expect(messages[2].content).toBe('short')
         expect(messages[3].content).toEqual(blocks)
-        expect(await fs.readFile('tool_output/tool_output_call_first.txt', 'utf-8')).toBe(firstContent)
-        expect(await fs.readFile('tool_output/tool_output_call_second.txt', 'utf-8')).toBe(secondContent)
-        expect((await fs.readdir('tool_output')).sort()).toEqual([
+        expect(await fs.readFile(path.join(outputDir, 'tool_output_call_first.txt'), 'utf-8')).toBe(firstContent)
+        expect(await fs.readFile(path.join(outputDir, 'tool_output_call_second.txt'), 'utf-8')).toBe(secondContent)
+        expect((await fs.readdir(outputDir)).sort()).toEqual([
             'tool_output_call_first.txt', 'tool_output_call_second.txt',
         ])
         const nextModelMessages = invoke.mock.calls[1][0] as BaseMessage[]
@@ -188,7 +198,7 @@ describe('toolNode output persistence', () => {
     })
 
     it('propagates persistence failures without making another model call', async () => {
-        await fs.mkdir('tool_output/tool_output_call_failure.txt', { recursive: true })
+        await fs.mkdir(path.join(outputDir, 'tool_output_call_failure.txt'), { recursive: true })
         const { graph, invoke } = setupGraph([
             tool(() => 'x'.repeat(50_001), { name: 'failure', schema: z.object({}) }),
         ])

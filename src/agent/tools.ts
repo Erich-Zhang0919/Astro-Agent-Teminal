@@ -1,4 +1,6 @@
 import * as fs from 'fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { tool } from '@langchain/core/tools'
 import { z } from 'zod'
 import { searchFn } from './tools/search'
@@ -20,8 +22,9 @@ import { agentTool } from './tools/agent_tool'
 export async function maybePersistedOutput(content: string, toolCallId: string): Promise<string> {
     if (content.length <= 50_000) return content
 
-    const filePath = `./tool_output/tool_output_${encodeURIComponent(toolCallId)}.txt`
-    await fs.mkdir('./tool_output', { recursive: true })
+    const outputDir = join(homedir(), '.astro', '.tool_output')
+    const filePath = join(outputDir, `tool_output_${encodeURIComponent(toolCallId)}.txt`)
+    await fs.mkdir(outputDir, { recursive: true })
     await fs.writeFile(filePath, content, 'utf-8')
 
     return `<persisted-output>

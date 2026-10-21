@@ -1,8 +1,9 @@
 import { mkdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { homedir } from 'node:os'
+import { dirname, join } from 'node:path'
 import { SqliteSaver } from '@langchain/langgraph-checkpoint-sqlite'
 
-export const DB_PATH = resolve(process.cwd(), '.data', 'checkpointer.db')
+export const DB_PATH = join(homedir(), '.astro', '.data', 'checkpointer.db')
 mkdirSync(dirname(DB_PATH), { recursive: true })
 
 export const checkpointer = SqliteSaver.fromConnString(DB_PATH)

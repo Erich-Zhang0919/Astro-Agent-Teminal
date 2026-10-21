@@ -1,15 +1,17 @@
-import { Command } from '@langchain/langgraph'
-import { isAIMessage } from '@langchain/core/messages'
+import { Command, GraphRecursionError } from '@langchain/langgraph'
+import { isAIMessage, ToolMessage } from '@langchain/core/messages'
 import { randomUUID } from 'node:crypto'
 import type { AgentGraphContext, createAgentGraph, ToolApprovalRequest } from './agent-graph'
 import { collectAgentStream, TokenUsage } from './context-usage'
 import { mcpBindingMatches } from './mcp/types'
+import { AGENT_RECURSION_LIMIT } from './agent-limits'
 
 type AgentGraph = ReturnType<typeof createAgentGraph>
 
 export interface AgentRunnerConfig {
     configurable: { thread_id: string }
     context?: AgentGraphContext
+    recursionLimit?: number
 }
 
 export interface AgentRunnerResult {
@@ -51,18 +53,50 @@ export async function runGraphWithApprovals(
         return (await confirmTool?.(request)) === true
     }
 
+    const requestFinalAnswer = async () => {
+        const snapshot = await graph.getState(config)
+        if (snapshot.next.includes('post_tool_hooks')) {
+            // Tools have already executed. Preserve their outputs and run post hooks once.
+            await graph.updateState(config, { finishRequested: true }, 'tools')
+        } else {
+            const last = snapshot.values.messages.at(-1)
+            const cancelled = last && isAIMessage(last) ? (last.tool_calls ?? []).map(call => new ToolMessage({
+                tool_call_id: call.id ?? '', name: call.name, status: 'error',
+                content: 'This pending tool call was not executed. The previous run has stopped; use the available results to answer.',
+            })) : []
+            // Close pending calls to keep the provider's AI/tool message sequence valid.
+            await graph.updateState(config, {
+                messages: cancelled, hookUpdates: [], finishRequested: true,
+            }, 'post_tool_hooks')
+        }
+    }
+
     const runUntilSettled = async (initialInput: Parameters<AgentGraph['stream']>[0]) => {
         let input = initialInput
+        let recovering = false
         while (!signal?.aborted) {
-            const stream = await graph.stream(input, {
-                ...config, streamMode: 'messages', signal,
-            })
-            const segment = await collectAgentStream(
-                stream as AsyncIterable<unknown>, onToken, configuredModelId, signal,
-            )
-            result.text += segment.text
-            if (segment.usage) result.usage = segment.usage
-            if (segment.text || segment.usage) result.modelId = segment.modelId
+            try {
+                const stream = await graph.stream(input, {
+                    ...config,
+                    recursionLimit: recovering ? AGENT_RECURSION_LIMIT : config.recursionLimit ?? AGENT_RECURSION_LIMIT,
+                    streamMode: 'messages', signal,
+                })
+                const segment = await collectAgentStream(
+                    stream as AsyncIterable<unknown>, token => {
+                        result.text += token
+                        onToken(token)
+                    }, configuredModelId, signal,
+                )
+                if (segment.usage) result.usage = segment.usage
+                if (segment.text || segment.usage) result.modelId = segment.modelId
+            } catch (error) {
+                if (!(error instanceof GraphRecursionError) || recovering || signal?.aborted) throw error
+                if (!(await graph.getState(config)).next.length) return
+                await requestFinalAnswer()
+                input = null
+                recovering = true
+                continue
+            }
 
             if (signal?.aborted) return
             const pending = await pendingApproval()
@@ -85,6 +119,12 @@ export async function runGraphWithApprovals(
             hookBatchId: randomUUID(), hookCalls: message.tool_calls ?? [],
             hookUpdates: [], pendingHookMessages: [],
         }, 'review_tools')
+        previousState = await graph.getState(config)
+    }
+    // A new question supersedes a previous call that has not even reached review.
+    // This also handles checkpoints left by the former 25-step recursion limit.
+    if (!signal?.aborted && previousState.next?.includes('prepare_tools')) {
+        await requestFinalAnswer()
         previousState = await graph.getState(config)
     }
     const previousApproval = approvalFromSnapshot(previousState)

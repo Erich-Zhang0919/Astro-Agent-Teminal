@@ -1,4 +1,4 @@
-import { webSearchTool } from './web_search'
+jest.mock('../config', () => ({ loadTavilyApiKey: jest.fn(() => 'configured-tavily-key') }))
 
 jest.mock('@langchain/tavily', () => {
     return {
@@ -15,6 +15,31 @@ jest.mock('@langchain/tavily', () => {
 })
 
 describe('webSearchTool', () => {
+    let webSearchTool: typeof import('./web_search')['webSearchTool']
+
+    beforeEach(() => {
+        jest.resetModules()
+        webSearchTool = require('./web_search').webSearchTool
+    })
+
+    it('passes the configured key directly to Tavily', () => {
+        expect(require('../config').loadTavilyApiKey).toHaveBeenCalledTimes(1)
+        expect(require('@langchain/tavily').TavilySearch).toHaveBeenCalledWith({
+            tavilyApiKey: 'configured-tavily-key',
+            maxResults: 3,
+            topic: 'general',
+        })
+    })
+
+    it('reports configuration errors before constructing Tavily', () => {
+        jest.resetModules()
+        require('../config').loadTavilyApiKey.mockImplementation(() => {
+            throw new Error('Invalid Astro configuration at env.TAVILY_API_KEY')
+        })
+        expect(() => require('./web_search')).toThrow('Invalid Astro configuration at env.TAVILY_API_KEY')
+        expect(require('@langchain/tavily').TavilySearch).not.toHaveBeenCalled()
+    })
+
     it('is a tool with the correct name', () => {
         expect(webSearchTool.name).toBe('tavily_search')
         expect(webSearchTool.permission_level).toBe('network')
