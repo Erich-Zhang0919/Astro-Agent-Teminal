@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import * as fs from 'node:fs/promises'
 import * as path from 'node:path'
+import { getProfilePath } from '../profile-path'
 
 export interface ProfileUpdateInput {
     profile: string
@@ -17,8 +18,8 @@ export async function profileUpdateFn({ profile }: ProfileUpdateInput): Promise<
         throw new Error('Profile content cannot be empty.')
     }
 
-    const dataDirectory = path.join(process.cwd(), 'data')
-    const profilePath = path.join(dataDirectory, 'profile.md')
+    const profilePath = getProfilePath()
+    const dataDirectory = path.dirname(profilePath)
     const backupFileName = createBackupFileName()
     const backupPath = path.join(dataDirectory, backupFileName)
 
@@ -37,7 +38,7 @@ export async function profileUpdateFn({ profile }: ProfileUpdateInput): Promise<
     await fs.writeFile(profilePath, `${normalizedProfile}\n`, 'utf-8')
 
     if (backupCreated) {
-        return `Profile updated successfully. Backup created: "data/${backupFileName}"`
+        return `Profile updated successfully. Backup created: "${backupPath}"`
     }
-    return 'Profile created successfully: "data/profile.md"'
+    return `Profile created successfully: "${profilePath}"`
 }

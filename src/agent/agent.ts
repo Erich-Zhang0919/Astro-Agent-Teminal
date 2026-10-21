@@ -17,8 +17,7 @@ import { createAgentGraph, CreateAgentGraphOptions, HistoryPreprocessor, ToolApp
 import { ContextCompactionStore } from './context-compaction-store'
 import { systemPrompt, delegationPrompt } from './prompt'
 import { runGraphWithApprovals } from './agent-runner'
-import { HookEngine, HookSessions, HookSessionOptions, SessionEndReason, HookEventCallback } from './hooks/engine'
-import { HookContextStore, MemoryHookContextStore } from './hooks/context-store'
+import { HookEngine, HookSessions, HookSessionOptions, SessionEndReason, HookEventCallback, HookContextStore, MemoryHookContextStore } from './hooks'
 import type { ToolEventCallback } from './tool-events'
 import { SubAgentQueue } from './subagent-queue'
 import { loadMcpConfiguration } from './mcp/config'
@@ -27,7 +26,7 @@ import type { McpServerStatus } from './mcp/types'
 
 export { HistoryPreprocessor, ToolApprovalRequest } from './agent-graph'
 export type { ToolExecutionEvent, ToolEventCallback } from './tool-events'
-export type { HookExecutionEvent, HookEventCallback } from './hooks/engine'
+export type { HookExecutionEvent, HookEventCallback } from './hooks'
 
 export interface RunAgentOptions {
     preprocessMessages?: HistoryPreprocessor
@@ -44,7 +43,7 @@ const { config: modelConfig, model, compactionModel } = createModels()
 
 // ── Agent & Memory ────────────────────────────────────────────
 function createRuntime(isSubAgent: boolean, inheritedHooks?: HookEngine, inheritedMcp?: McpManager) {
-    const inbox = isSubAgent ? new MemoryHookContextStore() : new HookContextStore()
+    const inbox = isSubAgent ? new MemoryHookContextStore() : new HookContextStore(checkpointer.db)
     const saver = isSubAgent ? new MemorySaver() : checkpointer
     const availableTools = [...tools, ...inheritedMcp?.tools ?? []] as unknown as CreateAgentGraphOptions['tools']
     const toolset = isSubAgent ? availableTools.filter(item => item.name !== 'agent_tool') : availableTools

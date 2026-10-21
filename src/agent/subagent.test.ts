@@ -1,7 +1,7 @@
 import { AIMessage, BaseMessage, HumanMessage, ToolMessage } from '@langchain/core/messages'
 import type { BaseChatModelCallOptions } from '@langchain/core/language_models/chat_models'
 import type { AgentGraphContext } from './agent-graph'
-import type { HookInput } from './hooks/engine'
+import type { HookInput } from './hooks'
 
 interface ModelOptions extends BaseChatModelCallOptions {
     testTools: { name: string }[]
@@ -57,8 +57,8 @@ jest.mock('./tools/web_search', () => {
 import { MemorySaver } from '@langchain/langgraph'
 import { agent, contextCompactionStore, endAgentSession, getMcpSessionStatus, runAgentStream, startAgentSession } from './agent'
 import { checkpointer, db } from './db'
-import { HookEngine } from './hooks/engine'
-import { MemoryHookContextStore } from './hooks/context-store'
+import { HookEngine } from './hooks'
+import { MemoryHookContextStore } from './hooks'
 import { delegationPrompt, systemPrompt } from './prompt'
 import { tools } from './tools'
 import * as toolRegistry from './tools'
@@ -254,7 +254,7 @@ it('isolates child input/tools/configuration and returns only the final answer b
     const controller = new AbortController()
     const result = await runAgentStream('PARENT SECRET', token => tokens.push(token), id, controller.signal,
         { confirmTool: approve, preprocessMessages, onToolEvent, onHookEvent, onHookDiagnostic,
-            hooksPath: 'src/agent/hooks/hooks.json' })
+            hooksPath: 'scripts/hooks.example.json' })
     expect(result.text).toBe('Delegating. PARENT FINAL')
     expect(tokens.join('')).toBe(result.text)
     expect(result.usage).toEqual({ inputTokens: 10, outputTokens: 5, totalTokens: 15 })
@@ -263,7 +263,7 @@ it('isolates child input/tools/configuration and returns only the final answer b
     expect(contextCompactionStore.get).toHaveBeenCalledTimes(1)
     expect(contextCompactionStore.get).toHaveBeenCalledWith(id)
     expect(loadHooks).toHaveBeenCalledWith(expect.objectContaining({
-        hooksPath: 'src/agent/hooks/hooks.json', onHookEvent, onDiagnostic: onHookDiagnostic,
+        hooksPath: 'scripts/hooks.example.json', onHookEvent, onDiagnostic: onHookDiagnostic,
     }))
     const childEvents = hookRun.mock.calls.map(([input]) => input as HookInput)
         .filter(input => input.sessionId === childId)
@@ -385,7 +385,7 @@ it('inherits the active hook configuration even when the current turn omits hook
     const id = parentId()
     const load = jest.spyOn(HookEngine, 'load')
     const onHookEvent = jest.fn()
-    await startAgentSession(id, { hooksPath: 'src/agent/hooks/hooks.json', onHookEvent })
+    await startAgentSession(id, { hooksPath: 'scripts/hooks.example.json', onHookEvent })
     mockRespond.mockImplementation(async (messages, options) => {
         if (child(options)) return new AIMessage('child done')
         return results(messages).length ? new AIMessage('parent done') : delegate()

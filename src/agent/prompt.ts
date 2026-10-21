@@ -1,11 +1,11 @@
 import { readFileSync } from 'fs'
-import { join } from 'path'
+import { getProfilePath } from './profile-path'
 import { discoverSkills, getSkillsListText } from './skills'
 
 discoverSkills()
 
 function readCurrentUserProfile(): string {
-    const profilePath = join(process.cwd(), 'data', 'profile.md')
+    const profilePath = getProfilePath()
 
     try {
         return readFileSync(profilePath, 'utf-8')

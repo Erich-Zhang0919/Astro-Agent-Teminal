@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { getAstroConfigurationPath, loadModelConfiguration, loadTavilyApiKey } from './config'
+import { getAstroConfigurationPath, getMCPServerConfig, loadModelConfiguration, loadTavilyApiKey } from './config'
 
 jest.mock('node:os', () => ({ ...jest.requireActual('node:os'), homedir: jest.fn() }))
 
@@ -33,6 +33,36 @@ it('loads the search key independently of model configuration and other env entr
 it('loads model settings independently of search configuration', () => {
     writeFileSync(path, JSON.stringify({ model: configuration, env: { TAVILY_API_KEY: null } }))
     expect(loadModelConfiguration()).toEqual(configuration)
+})
+
+it('loads mcpServers independently of other Astro settings without changing its format', () => {
+    const mcpServers = {
+        local: { command: 'node', args: ['server.js'], env: { TOKEN: '${MCP_TOKEN}' } },
+        remote: { transport: 'streamable-http', url: 'https://example.com/mcp' },
+    }
+    writeFileSync(path, JSON.stringify({ model: configuration, env: {}, hooks: {}, mcpServers }))
+    expect(getMCPServerConfig()).toEqual(mcpServers)
+})
+
+it('returns no MCP servers for a missing configuration file or section', () => {
+    expect(getMCPServerConfig()).toEqual({})
+    writeFileSync(path, JSON.stringify({ model: configuration, hooks: {} }))
+    expect(getMCPServerConfig()).toEqual({})
+})
+
+it.each([null, [], 'test-secret'])('rejects an invalid mcpServers section: %j', mcpServers => {
+    writeFileSync(path, JSON.stringify({ model: configuration, mcpServers }))
+    expect(getMCPServerConfig).toThrow(`Invalid Astro configuration at mcpServers: ${path}`)
+    expect(getMCPServerConfig).not.toThrow('test-secret')
+})
+
+it('reports malformed or unreadable MCP configuration without echoing file contents', () => {
+    writeFileSync(path, '{"apiKey":"test-secret",')
+    expect(getMCPServerConfig).toThrow(`Invalid JSON in Astro configuration: ${path}`)
+    expect(getMCPServerConfig).not.toThrow('test-secret')
+    rmSync(path)
+    mkdirSync(path)
+    expect(getMCPServerConfig).toThrow(`Cannot read Astro configuration: ${path}`)
 })
 
 it.each([

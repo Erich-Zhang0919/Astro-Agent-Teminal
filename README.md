@@ -72,11 +72,13 @@ continuing pending searches. A new question closes any previous tool call that
 has not yet reached permission review; pending approvals and hook recovery retain
 their normal behavior.
 
-The agent loads `.astro/hooks.json` from the current working directory when entering
-a session. Use `astro chat --hooks <path>` or `astro ask "message" --hooks <path>` to
-select another file. A missing default file disables hooks; an invalid configuration
-or missing explicit file fails session startup. Configuration remains fixed until
-the session is ended and entered again.
+The agent loads the optional `hooks` section from `~/.astro/astro.json` when entering
+a session, using the operating system's home directory on Windows, macOS and Linux.
+Add the following section alongside `model` and `env` in that file. Use
+`astro chat --hooks <path>` or `astro ask "message" --hooks <path>` to select a separate
+hooks file instead. A missing default file or absent `hooks` section disables hooks;
+an invalid configuration or missing explicit file fails session startup.
+Configuration remains fixed until the session is ended and entered again.
 
 ```json
 {
@@ -124,13 +126,13 @@ external side effects can deduplicate using `eventId`.
 API callers can pass `hooksPath` and `onHookDiagnostic` in `runAgentStream` options.
 Direct calls automatically start a session; use `startAgentSession(threadId,
 options)` and `endAgentSession(threadId, reason)` to manage explicit activation and
-closure. `src/agent/hooks/hooks.json` is an example, not the default configuration.
+closure. `scripts/hooks.example.json` is an example, not the default configuration.
 Its four commands have runnable examples under `scripts/`. They read the hook input
 and exit successfully without adding business rules; customize them for your project.
 Run the example configuration with:
 
 ```sh
-pnpm dev chat --hooks src/agent/hooks/hooks.json
+pnpm dev chat --hooks scripts/hooks.example.json
 ```
 
 Both `chat` and `ask` display a compact `[Tool] <name> called: <arguments>` line,
@@ -149,10 +151,12 @@ options. These notifications are separate from reply tokens.
 ## MCP Servers
 
 Astro can discover and call tools from local stdio and remote Streamable HTTP MCP
-Servers. Put configuration in `.astro/mcp.json` in your working directory, or use
-`astro chat --mcp-config <path>` / `astro ask "message" --mcp-config <path>`.
-An absent default file leaves MCP disabled. An explicit missing file, invalid JSON
-or invalid configuration stops session startup. The source file
+Servers. Add the `mcpServers` section to `~/.astro/astro.json` alongside `model`,
+`env` and `hooks`. The path uses the operating system's home directory on Windows,
+macOS and Linux. Use `astro chat --mcp-config <path>` /
+`astro ask "message" --mcp-config <path>` to select a separate MCP file instead.
+An absent default file or missing `mcpServers` section leaves MCP disabled.
+An explicit missing file, invalid JSON or invalid configuration stops session startup. The source file
 `src/agent/mcp/mcp.json` is an example and is never loaded automatically.
 
 ```json

@@ -3,12 +3,15 @@ import * as os from 'node:os'
 import * as path from 'node:path'
 import { profileUpdateFn } from './profile_update'
 
+jest.mock('node:os', () => ({ ...jest.requireActual('node:os'), homedir: jest.fn() }))
+
 describe('profileUpdateFn', () => {
     let temporaryDirectory: string
     let originalCwd: string
 
     beforeEach(async () => {
         temporaryDirectory = await fs.mkdtemp(path.join(os.tmpdir(), 'profile-update-test-'))
+        jest.mocked(os.homedir).mockReturnValue(path.join(temporaryDirectory, 'home'))
         originalCwd = process.cwd()
         process.chdir(temporaryDirectory)
     })
@@ -18,19 +21,21 @@ describe('profileUpdateFn', () => {
         await fs.rm(temporaryDirectory, { recursive: true, force: true })
     })
 
-    it('creates data/profile.md when no profile exists', async () => {
+    it('creates ~/.astro/.data/profile.md independently of the working directory', async () => {
         const result = await profileUpdateFn({ profile: '  - 姓名：小明  ' })
 
-        await expect(fs.readFile(path.join(temporaryDirectory, 'data', 'profile.md'), 'utf-8'))
+        const dataDirectory = path.join(os.homedir(), '.astro', '.data')
+        await expect(fs.readFile(path.join(dataDirectory, 'profile.md'), 'utf-8'))
             .resolves.toBe('- 姓名：小明\n')
-        await expect(fs.readdir(path.join(temporaryDirectory, 'data')))
+        await expect(fs.readdir(dataDirectory))
             .resolves.toEqual(['profile.md'])
-        expect(result).toBe('Profile created successfully: "data/profile.md"')
+        expect(result).toBe(`Profile created successfully: "${path.join(dataDirectory, 'profile.md')}"`)
+        await expect(fs.readdir(temporaryDirectory)).resolves.toEqual(['home'])
     })
 
     it('backs up the existing profile before replacing it with the complete profile', async () => {
-        const dataDirectory = path.join(temporaryDirectory, 'data')
-        await fs.mkdir(dataDirectory)
+        const dataDirectory = path.join(os.homedir(), '.astro', '.data')
+        await fs.mkdir(dataDirectory, { recursive: true })
         await fs.writeFile(path.join(dataDirectory, 'profile.md'), '- 姓名：小明\n- 语言：中文\n')
 
         const result = await profileUpdateFn({
@@ -44,7 +49,7 @@ describe('profileUpdateFn', () => {
             .resolves.toBe('- 姓名：小明\n- 语言：中文\n')
         await expect(fs.readFile(path.join(dataDirectory, 'profile.md'), 'utf-8'))
             .resolves.toBe('- 姓名：小明\n- 语言：中文\n- 工作：工程师\n')
-        expect(result).toContain(`data/${backupFile}`)
+        expect(result).toContain(path.join(dataDirectory, backupFile!))
     })
 
     it('rejects empty profile content', async () => {

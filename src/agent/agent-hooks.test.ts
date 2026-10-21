@@ -5,7 +5,7 @@ import { Command, MemorySaver, StateGraph, StateSchema, MessagesValue, START, EN
 import { z } from 'zod'
 import { createAgentGraph } from './agent-graph'
 import { runGraphWithApprovals } from './agent-runner'
-import { HookEngine, HookInput } from './hooks/engine'
+import { HookEngine, HookInput } from './hooks'
 import { withPermissionLevel } from './permission/util'
 import { maybePersistedOutput } from './tools'
 
@@ -28,7 +28,7 @@ async function setup(approval = false, output = 'result') {
     })
     const checkpointer = new MemorySaver()
     const graph = createAgentGraph({ model, tools, systemPrompt: 'test', checkpointer })
-    const hooks = await HookEngine.load({ cwd: process.cwd(), hooksPath: 'src/agent/hooks/hooks.json' })
+    const hooks = await HookEngine.load({ cwd: process.cwd(), hooksPath: 'scripts/hooks.example.json' })
     const run = jest.spyOn(hooks, 'run').mockResolvedValue({ blocked: false, injections: [] })
     const config = { configurable: { thread_id: 'hooks' }, context: { hooks } }
     return { first, second, calls, invoke, graph, hooks, run, config, model, tools, checkpointer }
@@ -39,7 +39,7 @@ beforeEach(() => jest.mocked(maybePersistedOutput).mockImplementation(async cont
 it('executes configured scripts and reports pre/post hooks around auto-approved tools', async () => {
     const { graph, first, second, config } = await setup()
     const events: string[] = []
-    const hooks = await HookEngine.load({ cwd: process.cwd(), hooksPath: 'src/agent/hooks/hooks.json',
+    const hooks = await HookEngine.load({ cwd: process.cwd(), hooksPath: 'scripts/hooks.example.json',
         onHookEvent: notice => { events.push(notice.event) } })
     first.mockImplementation(async () => { events.push('first tool'); return 'first result' })
     second.mockImplementation(async () => { events.push('second tool'); return 'second result' })
@@ -173,7 +173,7 @@ it('deduplicates lifecycle inbox messages after checkpointing', async () => {
 })
 
 it('preserves Command updates and runs post hooks on their tool messages', async () => {
-    const hooks = await HookEngine.load({ cwd: process.cwd(), hooksPath: 'src/agent/hooks/hooks.json' })
+    const hooks = await HookEngine.load({ cwd: process.cwd(), hooksPath: 'scripts/hooks.example.json' })
     const run = jest.spyOn(hooks, 'run').mockResolvedValue({ blocked: false, injections: ['command context'] })
     const execute = jest.fn(async () => new Command({ update: {
         messages: [new ToolMessage({ tool_call_id: 'command_call', content: 'command result' })],
@@ -248,7 +248,7 @@ it('does not execute tools if a pre hook is cancelled', async () => {
 })
 
 it('preserves tuple Command updates between hook-blocked tool results in call order', async () => {
-    const hooks = await HookEngine.load({ cwd: process.cwd(), hooksPath: 'src/agent/hooks/hooks.json' })
+    const hooks = await HookEngine.load({ cwd: process.cwd(), hooksPath: 'scripts/hooks.example.json' })
     const run = jest.spyOn(hooks, 'run').mockImplementation(async input =>
         input.event === 'PreToolUse' && input.tool.name !== 'command_tool'
             ? { blocked: true, error: 'denied', injections: [] }

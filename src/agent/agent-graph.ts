@@ -33,7 +33,7 @@ import { decideExecPermission } from './permission/exec'
 import { decideNetworkPermission } from './permission/network'
 import { permissionLevelOf, type PermissionDecision } from './permission/util'
 import { McpBinding, mcpBindingMatches, mcpMetadata } from './mcp/types'
-import { HookEngine, HookInjection, hookInjections } from './hooks/engine'
+import { HookEngine, HookInjection, hookInjections } from './hooks'
 import { emitToolEvent, ToolEventCallback } from './tool-events'
 import { AGENT_RECURSION_LIMIT, MAX_TOOL_ROUNDS } from './agent-limits'
 

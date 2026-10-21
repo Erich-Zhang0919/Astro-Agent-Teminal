@@ -6,7 +6,7 @@ import { z } from 'zod'
 import { createAgentGraph } from './agent-graph'
 import { runGraphWithApprovals } from './agent-runner'
 import { MAX_TOOL_ROUNDS } from './agent-limits'
-import type { HookEngine } from './hooks/engine'
+import type { HookEngine } from './hooks'
 
 jest.mock('./tools', () => ({ maybePersistedOutput: async (content: string) => content }))
 

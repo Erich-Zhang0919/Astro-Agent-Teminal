@@ -1,6 +1,6 @@
 import chalk from 'chalk'
 import type { ToolExecutionEvent } from './tool-events'
-import type { HookExecutionEvent } from './hooks/engine'
+import type { HookExecutionEvent } from './hooks'
 
 function compact(text: string, limit: number): string {
     const line = text.replace(/\s+/g, ' ').trim()

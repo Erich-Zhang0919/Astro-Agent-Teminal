@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { z } from 'zod'
+import { getAstroConfigurationPath } from './config'
 
 export type HookEvent = 'SessionStart' | 'SessionEnd' | 'PreToolUse' | 'PostToolUse'
 export type SessionStartReason = 'startup' | 'new' | 'resume' | 'ask'
@@ -157,6 +158,7 @@ const configSchema = z.object({
         PostToolUse: z.array(toolHookSchema).optional(),
     }).strict(),
 }).strict()
+const astroConfigSchema = configSchema.partial().strip()
 
 type HookConfig = z.infer<typeof configSchema>['hooks']
 type HookCommand = z.infer<typeof toolHookSchema>
@@ -173,7 +175,9 @@ export class HookEngine {
 
     static async load(options: HookLoadOptions): Promise<HookEngine> {
         const cwd = resolve(options.cwd)
-        const path = resolve(cwd, options.hooksPath ?? '.astro/hooks.json')
+        const path = options.hooksPath === undefined
+            ? getAstroConfigurationPath()
+            : resolve(cwd, options.hooksPath)
         let source: string
         try {
             source = await readFile(path, 'utf8')
@@ -185,10 +189,14 @@ export class HookEngine {
             throw new Error(`Cannot load hooks from ${path}: ${(error as Error).message}`)
         }
         try {
-            return new HookEngine(configSchema.parse(JSON.parse(source)).hooks,
+            const schema = options.hooksPath === undefined ? astroConfigSchema : configSchema
+            return new HookEngine(schema.parse(JSON.parse(source)).hooks ?? {},
                 cwd, options.onDiagnostic, options.onHookEvent)
         } catch (error) {
-            throw new Error(`Invalid hooks configuration ${path}: ${(error as Error).message}`)
+            const detail = error instanceof z.ZodError
+                ? `Invalid fields: ${error.issues.map(issue => issue.path.join('.') || 'configuration').join(', ')}.`
+                : 'Invalid JSON.'
+            throw new Error(`Invalid hooks configuration ${path}: ${detail}`)
         }
     }
 
@@ -319,4 +327,80 @@ function executeHook(
         })
         child.stdin.end(payload)
     })
+}
+
+export interface HookInbox {
+    append(threadId: string, injections: HookInjection[]): void
+    get(threadId: string): HookInjection[]
+    acknowledge(threadId: string, messageIds: string[]): void
+}
+
+/** Child session context never enters the durable lifecycle inbox. */
+export class MemoryHookContextStore implements HookInbox {
+    private readonly messages = new Map<string, HookInjection[]>()
+
+    append(threadId: string, injections: HookInjection[]): void {
+        const existing = this.get(threadId)
+        const ids = new Set(existing.map(message => message.id))
+        for (const injection of injections) {
+            if (!ids.has(injection.id)) {
+                existing.push(injection)
+                ids.add(injection.id)
+            }
+        }
+        this.messages.set(threadId, existing)
+    }
+
+    get(threadId: string): HookInjection[] {
+        return [...this.messages.get(threadId) ?? []]
+    }
+
+    acknowledge(threadId: string, messageIds: string[]): void {
+        const ids = new Set(messageIds)
+        const remaining = this.get(threadId).filter(message => !ids.has(message.id))
+        if (remaining.length) this.messages.set(threadId, remaining)
+        else this.messages.delete(threadId)
+    }
+
+    clear(): void {
+        this.messages.clear()
+    }
+}
+
+/** An inbox survives session exit and is acknowledged only after graph checkpointing. */
+export class HookContextStore implements HookInbox {
+    constructor(private readonly database: typeof import('./db').db) {
+        database.exec(`
+            CREATE TABLE IF NOT EXISTS hook_context (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                event TEXT NOT NULL,
+                text TEXT NOT NULL
+            );
+        `)
+    }
+
+    append(threadId: string, injections: HookInjection[]): void {
+        const insert = this.database.prepare(
+            'INSERT OR IGNORE INTO hook_context (id, session_id, event, text) VALUES (?, ?, ?, ?)',
+        )
+        this.database.transaction(() => {
+            for (const injection of injections) {
+                insert.run(injection.id, threadId, injection.event, injection.text)
+            }
+        })()
+    }
+
+    get(threadId: string): HookInjection[] {
+        return this.database.prepare(
+            'SELECT id, event, text FROM hook_context WHERE session_id = ? ORDER BY rowid',
+        ).all(threadId) as HookInjection[]
+    }
+
+    acknowledge(threadId: string, messageIds: string[]): void {
+        const remove = this.database.prepare('DELETE FROM hook_context WHERE session_id = ? AND id = ?')
+        this.database.transaction(() => {
+            for (const id of messageIds) remove.run(threadId, id)
+        })()
+    }
 }

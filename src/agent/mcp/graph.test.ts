@@ -3,7 +3,7 @@ import { AIMessage, HumanMessage, ToolMessage } from '@langchain/core/messages'
 import { Command, MemorySaver } from '@langchain/langgraph'
 import { createAgentGraph, ToolApprovalRequest } from '../agent-graph'
 import { runGraphWithApprovals } from '../agent-runner'
-import { HookEngine } from '../hooks/engine'
+import { HookEngine } from '../hooks'
 import { createMcpTool } from './adapter'
 import { requestToolApproval } from '../tool-approval'
 

@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
 import { z } from 'zod'
+import { getAstroConfigurationPath, getMCPServerConfig } from '../config'
 
 const common = {
     enabled: z.boolean().default(true),
@@ -24,16 +25,17 @@ export type McpServerConfig = z.infer<typeof serverSchema>
 export interface McpConfiguration { cwd: string; servers: Record<string, McpServerConfig> }
 
 export async function loadMcpConfiguration(cwd: string, mcpConfigPath?: string): Promise<McpConfiguration> {
-    const path = resolve(cwd, mcpConfigPath ?? '.astro/mcp.json')
-    let source: string
-    try { source = await readFile(path, 'utf8') } catch (error) {
-        if (!mcpConfigPath && (error as NodeJS.ErrnoException).code === 'ENOENT') {
-            return { cwd: resolve(cwd), servers: {} }
-        }
-        throw new Error(`Cannot read MCP configuration: ${path}`)
-    }
+    const path = mcpConfigPath === undefined ? getAstroConfigurationPath() : resolve(cwd, mcpConfigPath)
     let input: unknown
-    try { input = JSON.parse(source) } catch { throw new Error(`Invalid MCP JSON: ${path}`) }
+    if (mcpConfigPath === undefined) {
+        input = { mcpServers: getMCPServerConfig() }
+    } else {
+        let source: string
+        try { source = await readFile(path, 'utf8') } catch {
+            throw new Error(`Cannot read MCP configuration: ${path}`)
+        }
+        try { input = JSON.parse(source) } catch { throw new Error(`Invalid MCP JSON: ${path}`) }
+    }
     const parsed = configSchema.safeParse(input)
     if (!parsed.success) {
         const locations = parsed.error.issues.map(issue => issue.path.join('.') || 'mcpServers').join(', ')
