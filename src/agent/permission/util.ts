@@ -1,4 +1,5 @@
 import * as fs from 'node:fs'
+import { homedir } from 'node:os'
 import * as path from 'node:path'
 
 export type PermissionLevel = 'read' | 'write' | 'exec' | 'network' | 'mcp'
@@ -42,15 +43,20 @@ export function permissionLevelOf(tool: unknown): PermissionLevel | undefined {
 export function isInProjectDir(filepath: string, cwd = process.cwd()): boolean {
     const project = path.resolve(cwd)
     const candidate = path.resolve(project, filepath)
-    if (!isWithin(project, candidate)) return false
+    const astro = path.join(homedir(), '.astro')
 
-    try {
-        const realProject = fs.realpathSync.native(project)
-        const realCandidate = realpathWithMissingSuffix(candidate)
-        return isWithin(realProject, realCandidate)
-    } catch {
-        return false
-    }
+    return [project, astro].some(root => {
+        if (!isWithin(root, candidate)) return false
+        try {
+            // The user-level .astro directory may not have been created yet.
+            const realRoot = root === project
+                ? fs.realpathSync.native(root)
+                : realpathWithMissingSuffix(root)
+            return isWithin(realRoot, realpathWithMissingSuffix(candidate))
+        } catch {
+            return false
+        }
+    })
 }
 
 function isWithin(parent: string, candidate: string): boolean {
