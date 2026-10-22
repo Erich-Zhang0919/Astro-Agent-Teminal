@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync, statSync } from 'fs'
-import { join } from 'path'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 
 export interface SkillInfo {
     name: string
@@ -9,6 +10,15 @@ export interface SkillInfo {
 
 const skills: SkillInfo[] = []
 const skillContentMap = new Map<string, string>()
+
+function getSkillDirectories(): string[] {
+    const home = homedir()
+    return [
+        join(home, '.agents', 'skills'),
+        join(home, '.astro', '.agents', 'skills'),
+        join(home, '.astro', 'skills'),
+    ]
+}
 
 function parseFrontmatter(content: string): { name: string; description: string } {
     if (!content.startsWith('---')) {
@@ -35,25 +45,33 @@ export function discoverSkills(): SkillInfo[] {
     skills.length = 0
     skillContentMap.clear()
 
-    const skillsDir = join(__dirname, 'skills')
-    const entries = readdirSync(skillsDir)
-    for (const entry of entries) {
-        const entryPath = join(skillsDir, entry)
+    const discovered = new Map<string, SkillInfo>()
+    for (const skillsDir of getSkillDirectories()) {
+        let entries: string[]
         try {
-            const entryStat = statSync(entryPath)
-            if (!entryStat.isDirectory()) continue
+            entries = readdirSync(skillsDir)
+        } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code
+            if (code === 'ENOENT' || code === 'ENOTDIR') continue
+            throw error
+        }
+        for (const entry of entries) {
+            const entryPath = join(skillsDir, entry)
+            try {
+                if (!statSync(entryPath).isDirectory()) continue
 
-            const skillMdPath = join(entryPath, 'SKILL.md')
-            const content = readFileSync(skillMdPath, 'utf-8')
-            const { name, description } = parseFrontmatter(content)
-            if (name && description) {
-                skills.push({ name, description, dirPath: entryPath })
-                skillContentMap.set(name, content)
+                const content = readFileSync(join(entryPath, 'SKILL.md'), 'utf-8')
+                const { name, description } = parseFrontmatter(content)
+                if (name && description) {
+                    discovered.set(name, { name, description, dirPath: entryPath })
+                    skillContentMap.set(name, content)
+                }
+            } catch {
+                // Ignore directories without SKILL.md or parse errors
             }
-        } catch {
-            // Ignore directories without SKILL.md or parse errors
         }
     }
+    skills.push(...discovered.values())
 
     return skills
 }
@@ -63,7 +81,8 @@ export function loadSkill(name: string): string | null {
 }
 
 export function getSkillsListText(): string {
-    const skillsDir = join(__dirname, 'skills')
+    const directories = getSkillDirectories().map(directory => `- ${directory}`).join('\n')
+    const newSkillDirectory = join(homedir(), '.astro', 'skills')
     const list = skills.map((s) => `- **${s.name}**: ${s.description}`).join('\n')
-    return `${list}\n\nSkills 目录: ${skillsDir}\n如需新增 skill，请将其放置在该目录下。`
+    return `${list}\n\nSkills 目录（按顺序加载，同名时后者覆盖前者）:\n${directories}\n新增 skill 必须放在 ${newSkillDirectory} 目录下。`
 }

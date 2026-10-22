@@ -4,6 +4,7 @@ import stringWidth from 'string-width'
 import type { SessionSummary } from './session-store'
 import type { ContextCompactionResult } from './context-usage'
 import type { McpServerStatus } from './mcp/types'
+import { discoverSkills, type SkillInfo } from './skills'
 
 export interface ChatSessionState {
     threadId: string
@@ -31,6 +32,7 @@ export interface ChatCommandDependencies {
     now?: () => Date
     switchSession?: (from: string, to: string, reason: 'new' | 'resume') => Promise<void>
     getMcpStatus?: (threadId: string) => Promise<McpServerStatus[]>
+    listSkills?: () => SkillInfo[]
 }
 
 export class ChatCommandRegistry {
@@ -90,8 +92,21 @@ export function createChatCommandRegistry({
     now = () => new Date(),
     switchSession,
     getMcpStatus,
+    listSkills = discoverSkills,
 }: ChatCommandDependencies): ChatCommandRegistry {
     return new ChatCommandRegistry()
+        .register({
+            name: 'skills', description: 'List installed skills', usage: '/skills',
+            execute: (rawArgs, context) => {
+                if (rawArgs) { context.writeLine('Usage: /skills', 'error'); return }
+                const skills = listSkills()
+                context.writeLine(`Available skills: ${skills.length}`)
+                for (const skill of skills) {
+                    context.writeLine(`- ${skill.name}: ${skill.description}`)
+                    context.writeLine(`  ${skill.dirPath}`)
+                }
+            },
+        })
         .register({
             name: 'mcp', description: 'Inspect MCP Servers and tools', usage: '/mcp [tools [server]]',
             execute: async (rawArgs, context) => {

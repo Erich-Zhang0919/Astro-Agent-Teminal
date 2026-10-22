@@ -15,13 +15,24 @@ it('keeps long arguments on one short line and never displays result contents', 
     expect(output).not.toContain('next line')
 })
 
-it('shows short error and blocked statuses without result previews', () => {
+it('shows structured blocking reasons without exposing result previews', () => {
     const lines: string[] = []
     const display = createAgentDisplay(text => lines.push(text))
-    for (const status of ['error', 'blocked'] as const) {
-        display.onToolEvent({ name: 'exec', args: {}, type: 'result', status, content: 'hidden failure' })
-    }
-    expect(lines.join('')).toBe('[Tool] exec: Error\n[Tool] exec: Blocked\n')
+    display.onToolEvent({ name: 'exec', args: {}, type: 'result', status: 'error', content: 'hidden failure' })
+    display.onToolEvent({ name: 'exec', args: {}, type: 'result', status: 'blocked', content: 'hidden failure',
+        reason: { source: 'permission', code: 'outside_workspace', message: 'Blocked: Command leaves the project.' } })
+    expect(lines.join('')).toBe('[Tool] exec: Error\n[Tool] exec: Blocked [permission/outside_workspace]: Command leaves the project.\n')
+    expect(lines.join('')).not.toContain('hidden failure')
+})
+
+it('bounds multiline hook blocking reasons to one notice', () => {
+    const lines: string[] = []
+    const display = createAgentDisplay(text => lines.push(text))
+    display.onToolEvent({ name: 'read_file', args: {}, type: 'result', status: 'blocked', content: 'hidden output',
+        reason: { source: 'hook', code: 'hook_blocked', message: 'Hook denied\n' + 'x'.repeat(1000) } })
+    expect(lines.join('')).toContain('[hook/hook_blocked]: Hook denied ')
+    expect(lines.join('').trim().split('\n')).toHaveLength(1)
+    expect(lines.join('').length).toBeLessThan(250)
 })
 
 it('displays actual multiline stdout and stderr separately from assistant text', () => {

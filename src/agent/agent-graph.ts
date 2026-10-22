@@ -31,7 +31,7 @@ import { decideReadPermission } from './permission/read'
 import { decideWritePermission } from './permission/write'
 import { decideExecPermission } from './permission/exec'
 import { decideNetworkPermission } from './permission/network'
-import { permissionLevelOf, type PermissionDecision } from './permission/util'
+import { blockPermission, permissionLevelOf, type PermissionDecision, type ToolBlockReason } from './permission/util'
 import { McpBinding, mcpBindingMatches, mcpMetadata } from './mcp/types'
 import { HookEngine, HookInjection, hookInjections } from './hooks'
 import { emitToolEvent, ToolEventCallback } from './tool-events'
@@ -99,6 +99,7 @@ const AgentState = new StateSchema({
     messages: MessagesValue,
     approvalDecisions: z.array(z.boolean()).default([]),
     blockedReasons: z.array(z.string().nullable()).default([]),
+    blockedDetails: z.array(z.custom<ToolBlockReason>().nullable()).default([]),
     hookBatchId: z.string().default(''),
     hookCalls: z.array(z.custom<HookToolCall>()).default([]),
     pendingHookMessages: z.array(z.custom<HookInjection>()).default([]),
@@ -187,11 +188,11 @@ export function createAgentGraph({
 
     const reviewCall = (call: ToolCall, config: LangGraphRunnableConfig<AgentGraphContext>): ToolReview => {
         const item = resolveTools(config).byName.get(call.name)
-        if (!item) return { permission: { kind: 'block', message: 'Tool is not registered in this session.' } }
+        if (!item) return { permission: blockPermission('tool_unavailable', 'Tool is not registered in this session.') }
         const level = permissionLevelOf(item)
         const metadata = mcpMetadata(item)
         if (level === 'mcp') {
-            if (!metadata?.isAvailable()) return { permission: { kind: 'block', message: 'MCP tool is unavailable. Re-enter the session to reconnect.' } }
+            if (!metadata?.isAvailable()) return { permission: blockPermission('tool_unavailable', 'MCP tool is unavailable. Re-enter the session to reconnect.') }
             const { serverId, toolName, bindingFingerprint } = metadata
             return { mcp: { serverId, toolName, bindingFingerprint },
                 permission: { kind: metadata.autoApprove ? 'allow' : 'confirm' } }
@@ -224,10 +225,13 @@ export function createAgentGraph({
         const decisions = toolCalls.map((call, index) => {
             const { permission, mcp } = state.toolReviews[index] ?? reviewCall(call, config)
             if (permission.kind === 'allow') {
-                return { approved: true, blockedReason: null }
+                return { approved: true, blockedReason: null, blockedDetail: null }
             }
             if (permission.kind === 'block') {
-                return { approved: false, blockedReason: permission.message }
+                return { approved: false, blockedReason: permission.message,
+                    blockedDetail: permission.reason ?? {
+                        source: 'permission' as const, code: 'policy_blocked' as const, message: permission.message,
+                    } }
             }
             const approved = interrupt<ToolApprovalRequest, { approved: boolean }>({
                 toolCallId: call.id,
@@ -237,11 +241,15 @@ export function createAgentGraph({
                 total: toolCalls.length,
                 ...(mcp ? { mcp } : {}),
             }).approved === true
-            return { approved, blockedReason: null }
+            return { approved, blockedReason: null, blockedDetail: approved ? null : {
+                source: 'user' as const, code: 'user_rejected' as const,
+                message: 'The user rejected this tool call. Do not retry it without a new user request.',
+            } }
         })
         return {
             approvalDecisions: decisions.map((decision) => decision.approved),
             blockedReasons: decisions.map((decision) => decision.blockedReason),
+            blockedDetails: decisions.map((decision) => decision.blockedDetail),
             hookBatchId: randomUUID(),
             hookCalls: toolCalls.map((call, index) => ({ ...call,
                 ...(state.toolReviews[index]?.mcp ? { mcp: state.toolReviews[index].mcp } : {}) })),
@@ -252,12 +260,14 @@ export function createAgentGraph({
     const preToolHooks: GraphNode<typeof AgentState, AgentGraphContext> = async (state, config) => {
         const approvals = [...state.approvalDecisions]
         const reasons = [...state.blockedReasons]
+        const details = state.blockedReasons.map((_, index) => state.blockedDetails[index] ?? null)
         const injections = [...state.pendingHookMessages]
         const hooks = config.context?.hooks
         for (const [index, call] of state.hookCalls.entries()) {
             if (approvals[index] && call.mcp && !mcpBindingMatches(call.mcp, resolveTools(config).byName.get(call.name))) {
                 approvals[index] = false
                 reasons[index] = 'MCP tool binding changed or is unavailable. Request a new tool call.'
+                details[index] = { source: 'permission', code: 'tool_unavailable', message: reasons[index]! }
             }
         }
         if (hooks) {
@@ -273,10 +283,11 @@ export function createAgentGraph({
                 if (result.blocked) {
                     approvals[index] = false
                     reasons[index] = result.error ?? 'PreToolUse hook blocked this tool call.'
+                    details[index] = { source: 'hook', code: 'hook_blocked', message: reasons[index]! }
                 }
             }
         }
-        return { approvalDecisions: approvals, blockedReasons: reasons,
+        return { approvalDecisions: approvals, blockedReasons: reasons, blockedDetails: details,
             pendingHookMessages: injections }
     }
 
@@ -317,7 +328,12 @@ export function createAgentGraph({
         state = { ...state, approvalDecisions,
             blockedReasons: state.blockedReasons.map((reason, index) =>
                 state.approvalDecisions[index] && !approvalDecisions[index]
-                    ? 'MCP tool binding changed or is unavailable. Request a new tool call.' : reason) }
+                    ? 'MCP tool binding changed or is unavailable. Request a new tool call.' : reason),
+            blockedDetails: state.blockedReasons.map((_, index) =>
+                state.approvalDecisions[index] && !approvalDecisions[index]
+                    ? { source: 'permission' as const, code: 'tool_unavailable' as const,
+                        message: 'MCP tool binding changed or is unavailable. Request a new tool call.' }
+                    : state.blockedDetails[index] ?? null) }
         const lastMessage = state.messages[state.messages.length - 1]
         if (!lastMessage || !isAIMessage(lastMessage)) {
             throw new Error('Tool execution requires an AI message.')
@@ -344,10 +360,16 @@ export function createAgentGraph({
             await emitToolEvent(config.context?.onToolEvent, {
                 type: 'result', toolCallId: call.id, name: call.name, args: call.args,
                 status: 'blocked', content: rejectedMessages[rejectedIndex++].content,
+                reason: state.blockedDetails[index] ?? {
+                    // Older checkpoints have only textual reasons.
+                    source: state.blockedReasons[index] ? 'permission' : 'user',
+                    code: state.blockedReasons[index] ? 'policy_blocked' : 'user_rejected',
+                    message: String(rejectedMessages[rejectedIndex - 1].content),
+                },
             })
         }
         if (rejectedMessages.length === toolCalls.length) {
-            return { approvalDecisions, blockedReasons: state.blockedReasons,
+            return { approvalDecisions, blockedReasons: state.blockedReasons, blockedDetails: state.blockedDetails,
                 hookUpdates: [{ kind: 'update' as const,
                 value: { messages: rejectedMessages } }] }
         }
@@ -395,7 +417,7 @@ export function createAgentGraph({
                 }]
             }
         }
-        return { approvalDecisions, blockedReasons: state.blockedReasons,
+        return { approvalDecisions, blockedReasons: state.blockedReasons, blockedDetails: state.blockedDetails,
             hookUpdates: updates.map((update): PendingToolUpdate => isCommand(update)
             ? { kind: 'command', value: { ...update.toJSON(), graph: update.graph } }
             : { kind: 'update', value: update as Record<string, unknown> }) }

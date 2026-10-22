@@ -31,7 +31,10 @@ export function createAgentDisplay(write: (text: string) => void) {
                 const args = compact(JSON.stringify(event.args), 120)
                 write(`${chalk.magenta('[Tool]')} ${chalk.yellow(event.name)} called: ${chalk.cyan(args)}\n`)
             } else {
-                write(`${chalk.red(`[Tool] ${event.name}: ${event.status === 'blocked' ? 'Blocked' : 'Error'}`)}\n`)
+                const status = event.status === 'blocked'
+                    ? `Blocked [${event.reason.source}/${event.reason.code}]: ${compact(event.reason.message.replace(/^Blocked:\s*/, ''), 180)}`
+                    : 'Error'
+                write(`${chalk.red(`[Tool] ${event.name}: ${status}`)}\n`)
             }
         },
         onHookEvent(event: HookExecutionEvent): void {

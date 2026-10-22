@@ -78,7 +78,7 @@ function safeSegment(words: string[], platform: NodeJS.Platform, depth: number):
             isSafeExecCommand(args.slice(commandIndex + 1).join(' '), platform, depth + 1)
     }
     if (name === 'find' && args.some((arg) =>
-        ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'].includes(arg.toLowerCase()))) return false
+        ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprint0', '-fprintf', '-fls'].includes(arg.toLowerCase()))) return false
     return READ_COMMANDS.has(name) || (platform === 'win32' && WINDOWS_READ_COMMANDS.has(name))
 }
 

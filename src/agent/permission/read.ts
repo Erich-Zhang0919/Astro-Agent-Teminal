@@ -1,5 +1,5 @@
 import { isDangerousPath } from './is-dangerous-path'
-import { PermissionDecision, PROTECTED_PATH_MESSAGE } from './util'
+import { blockPermission, PermissionDecision, PROTECTED_PATH_MESSAGE } from './util'
 
 export function decideReadPermission(
     args: Record<string, unknown>,
@@ -8,7 +8,7 @@ export function decideReadPermission(
     const filepath = args.file_path
     if (typeof filepath !== 'string') return { kind: 'allow' }
     if (isDangerousPath(filepath, { cwd })) {
-        return { kind: 'block', message: PROTECTED_PATH_MESSAGE }
+        return blockPermission('protected_path', PROTECTED_PATH_MESSAGE)
     }
     return { kind: 'allow' }
 }

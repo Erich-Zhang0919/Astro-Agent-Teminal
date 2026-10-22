@@ -3,10 +3,21 @@ import * as path from 'node:path'
 
 export type PermissionLevel = 'read' | 'write' | 'exec' | 'network' | 'mcp'
 
+export interface ToolBlockReason {
+    source: 'permission' | 'hook' | 'user'
+    code: 'outside_workspace' | 'script_language' | 'dangerous_command' | 'protected_path'
+        | 'tool_unavailable' | 'hook_blocked' | 'user_rejected' | 'policy_blocked'
+    message: string
+}
+
 export type PermissionDecision =
     | { kind: 'allow' }
     | { kind: 'confirm' }
-    | { kind: 'block'; message: string }
+    | { kind: 'block'; message: string; reason?: ToolBlockReason }
+
+export function blockPermission(code: ToolBlockReason['code'], message: string): PermissionDecision {
+    return { kind: 'block', message, reason: { source: 'permission', code, message } }
+}
 
 export const PROTECTED_PATH_MESSAGE =
     'Access to this protected path is blocked. Please choose a safe path instead.'

@@ -19,7 +19,7 @@
     "astro": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json && node scripts/copy-skills.mjs",
+    "build": "tsc -p tsconfig.build.json",
     "dev": "NODE_OPTIONS='--require ./polyfill.cjs' tsx src/index.ts",
     "start": "node dist/index.js",
     "test": "jest",

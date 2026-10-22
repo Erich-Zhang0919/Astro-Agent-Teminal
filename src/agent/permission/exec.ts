@@ -1,6 +1,6 @@
 import * as fs from 'node:fs'
 import * as path from 'node:path'
-import { isInProjectDir, PermissionDecision } from './util'
+import { blockPermission, isInProjectDir, PermissionDecision } from './util'
 import { getDangerousCommandReason } from './dangerous-command'
 import { isSafeExecCommand, isWindowsReadSwitch } from './safe-command'
 
@@ -38,14 +38,17 @@ export function decideExecPermission(
         const safePowerShell = platform === 'win32' && isSafeExecCommand(command, platform) &&
             /^(?:powershell|pwsh)(?:\.exe)?\s/i.test(command.trim())
         const language = safePowerShell ? undefined : findScriptExecution(command, cwd)
-        if (language) return { kind: 'block', message: LANGUAGE_MESSAGES[language] }
+        if (language) return blockPermission('script_language', LANGUAGE_MESSAGES[language])
         const dangerousReason = getDangerousCommandReason(command, cwd)
-        if (dangerousReason) return { kind: 'block', message: dangerousReason }
+        if (dangerousReason) return blockPermission('dangerous_command', dangerousReason)
+        // Read-only commands may inspect user-level directories and files. The
+        // dangerous-command checks above still reject writes and protected paths.
+        if (isSafeExecCommand(command, platform)) return { kind: 'allow' }
     }
     if (typeof command !== 'string' || !isCommandInProjectDir(command, cwd, platform)) {
-        return { kind: 'block', message: EXEC_DIRECTORY_MESSAGE }
+        return blockPermission('outside_workspace', EXEC_DIRECTORY_MESSAGE)
     }
-    return isSafeExecCommand(command, platform) ? { kind: 'allow' } : { kind: 'confirm' }
+    return { kind: 'confirm' }
 }
 
 type Token = { word: string } | { operator: string }

@@ -264,7 +264,7 @@ function conditionalRisk(name: string, args: string[], rawArgs: string[]): Categ
     }
     if (name === 'reg') return args[0] === 'query' ? 'sensitive information access' : 'user configuration changes'
     if (name === 'defaults') return args.includes('read') ? 'sensitive information access' : 'user configuration changes'
-    if (name === 'find' && args.some((arg) => ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'].includes(arg))) return 'file modification'
+    if (name === 'find' && args.some((arg) => ['-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprint0', '-fprintf', '-fls'].includes(arg))) return 'file modification'
     if (name === 'sort' && args.some((arg) => /^-o/.test(arg) || arg.startsWith('--output'))) return 'file modification'
     if (name === 'ps' && args.some((arg) => /^[a-z]*e[a-z]*$/.test(arg) || arg === '--environment')) return 'sensitive information access'
     if (['get-childitem', 'gci', 'dir', 'get-item', 'gi', 'get-content', 'gc', 'type', 'cat'].includes(name) && args.some((arg) => arg.startsWith('env:'))) return 'sensitive information access'

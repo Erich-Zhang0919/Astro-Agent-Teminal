@@ -45,18 +45,11 @@ describe('exec permission', () => {
         'cd "$HOME"',
         'cd $(printf ..)',
         'cd `printf ..`',
-        'cat ../secret.txt',
-        'cat outside-link/file.txt',
-        'cat outside-link',
-        'cat outside-link/../project/local.txt',
-        'cat root-link/../outside/file.txt',
         'cd -P root-link && cd ..',
         'cd missing; cd ..',
         'cd outside-link',
         'cd outside=link',
-        'cat outside=link/file.txt',
         'echo hello > ../outside.txt',
-        'git -C .. status',
         'git -C.. status',
         "sh -c 'cd .. && pwd'",
         "env sh -c 'cd ..'",
@@ -80,8 +73,9 @@ describe('exec permission', () => {
     })
 
     it('blocks missing and malformed command arguments', () => {
-        expect(decideExecPermission({}, project)).toEqual({ kind: 'block', message: EXEC_DIRECTORY_MESSAGE })
-        expect(decideExecPermission({ command: 123 }, project)).toEqual({ kind: 'block', message: EXEC_DIRECTORY_MESSAGE })
+        expect(decideExecPermission({}, project)).toMatchObject({ kind: 'block', message: EXEC_DIRECTORY_MESSAGE,
+            reason: { source: 'permission', code: 'outside_workspace' } })
+        expect(decideExecPermission({ command: 123 }, project)).toMatchObject({ kind: 'block', message: EXEC_DIRECTORY_MESSAGE })
     })
 
     it.each([
@@ -108,9 +102,10 @@ describe('exec permission', () => {
         'poetry run python script.py',
         'pipenv run python script.py',
     ])('blocks Python and directs the model to run_py: %s', (command) => {
-        expect(decideExecPermission({ command }, project)).toEqual({
+        expect(decideExecPermission({ command }, project)).toMatchObject({
             kind: 'block',
             message: 'Blocked: Python scripts cannot run through exec. Use the run_py tool instead.',
+            reason: { source: 'permission', code: 'script_language' },
         })
     })
 
@@ -133,7 +128,7 @@ describe('exec permission', () => {
         "sh -c 'npx tsx script.ts'",
         'env node script.js',
     ])('blocks JS/TS and directs the model to run_js: %s', (command) => {
-        expect(decideExecPermission({ command }, project)).toEqual({
+        expect(decideExecPermission({ command }, project)).toMatchObject({
             kind: 'block',
             message: 'Blocked: JavaScript or TypeScript scripts cannot run through exec. Use the run_js tool instead.',
         })
@@ -149,7 +144,7 @@ describe('exec permission', () => {
         'gcc main.c', "sh -c 'ruby script.rb'",
         "awk 'BEGIN { print 1 }'", 'tclsh script.tcl',
     ])('blocks other non-shell languages: %s', (command) => {
-        expect(decideExecPermission({ command }, project)).toEqual({
+        expect(decideExecPermission({ command }, project)).toMatchObject({
             kind: 'block',
             message: 'Blocked: non-shell language scripts cannot run through exec. Only shell, bash and sh scripts are permitted.',
         })
@@ -175,6 +170,30 @@ describe('exec permission', () => {
     })
 
     it.each([
+        'ls -la ..', 'ls -la ../outside', 'ls -la outside-link',
+        'ls ~/.astro/skills', 'find ../outside -name "*.md"',
+        'cat ../outside/report.md', 'cat outside-link/report.md',
+        'cat outside-link/../project/report.md', 'cat root-link/../outside/report.md',
+        'cat outside=link/report.md', 'git -C .. status',
+        'ls ../outside | head -n 5',
+    ])('allows read-only queries outside the workspace: %s', command => {
+        expect(decideExecPermission({ command }, project)).toEqual({ kind: 'allow' })
+    })
+
+    it('allows absolute external paths but blocks combined writes and protected targets', () => {
+        expect(decideExecPermission({ command: `ls -la '${root}/outside'` }, project)).toEqual({ kind: 'allow' })
+        for (const command of ['ls .. && rm ../outside/file', 'ls .. > ../listing.txt',
+            'find .. -fprint0 ../listing.txt', 'ls .. | tee ../listing.txt',
+            'ls ../.ssh', 'cat ../.env', 'ls .. && touch ../file']) {
+            expect(decideExecPermission({ command }, project)).toMatchObject({ kind: 'block',
+                reason: { source: 'permission', code: 'dangerous_command' } })
+        }
+        for (const command of ['DIR ../outside', 'Get-ChildItem ../outside', 'Get-Content ../outside/report.md']) {
+            expect(decideExecPermission({ command }, project, 'win32')).toEqual({ kind: 'allow' })
+        }
+    })
+
+    it.each([
         'DIR /B /S', 'TYPE README.md', 'find /I "text" README.md',
         'findstr /I text README.md', 'date /T', 'WHOAMI.EXE /USER',
         'Get-ChildItem', 'Get-Location', 'Get-Content README.md',
@@ -187,7 +206,7 @@ describe('exec permission', () => {
     })
 
     it('keeps dangerous options and paths blocked despite allowlisted executable names', () => {
-        for (const command of ['cat .env', 'cat ../secret.txt', 'find . -delete',
+        for (const command of ['cat .env', 'find . -delete',
             'find . -exec rm file ;', 'git diff --output=file', 'echo hello >file',
             'date -s 2026-01-01', 'date 100917202026.00']) {
             expect(decideExecPermission({ command }, project)).toMatchObject({ kind: 'block' })
@@ -196,7 +215,7 @@ describe('exec permission', () => {
         expect(decideExecPermission({ command: 'powershell -NoProfile -NonInteractive -Command "Get-Content .env"' },
             project, 'win32')).toMatchObject({ kind: 'block' })
         for (const command of ['findstr secret .env', 'Select-String secret .env',
-            'sls secret .env', 'date -r .env', 'Get-Content ../outside.txt']) {
+            'sls secret .env', 'date -r .env', 'Get-Content ../.env']) {
             expect(decideExecPermission({ command }, project, 'win32')).toMatchObject({ kind: 'block' })
         }
     })

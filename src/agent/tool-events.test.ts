@@ -68,6 +68,7 @@ it('reports permission-blocked calls without a start event or actual execution',
     expect(onToolEvent).toHaveBeenCalledTimes(1)
     expect(onToolEvent.mock.calls[0][0]).toMatchObject({
         type: 'result', status: 'blocked', content: expect.stringContaining('Blocked'),
+        reason: { source: 'permission', code: 'dangerous_command', message: expect.stringContaining('file deletion') },
     })
 })
 
@@ -89,6 +90,21 @@ it('reports rejection and approval only once after all approval interrupts resol
         ['rejected', 'result'], ['approved', 'start'], ['approved', 'result'],
     ])
     expect(execute).toHaveBeenCalledTimes(1)
+    expect(onToolEvent.mock.calls[0][0]).toMatchObject({
+        status: 'blocked', reason: { source: 'user', code: 'user_rejected' },
+    })
+})
+
+it('runs external directory queries without an approval interrupt', async () => {
+    const execute = jest.fn(async () => 'skill folders')
+    const { graph, onToolEvent, config } = graphFor([
+        withPermissionLevel(tool(execute, { name: 'exec', schema: z.object({ command: z.string() }) }), 'exec'),
+    ], [{ name: 'exec', id: 'external-list', args: { command: 'ls -la /Users/didi/.astro/skills' } }])
+    const confirm = jest.fn(async () => false)
+    await runGraphWithApprovals(graph, 'list directories', () => undefined, config, 'model', undefined, confirm)
+    expect(confirm).not.toHaveBeenCalled()
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(onToolEvent.mock.calls.map(([event]) => event.type)).toEqual(['start', 'result'])
 })
 
 it('reports each parallel tool as it completes, even while a sibling is still running', async () => {

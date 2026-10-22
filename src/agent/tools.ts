@@ -15,6 +15,7 @@ import { runJsFn } from './tools/run_js'
 import { runPyFn } from './tools/run_py'
 import { webFetchFn } from './tools/web_fetch'
 import { loadSkillFn } from './tools/load_skill'
+import { listSkillsFn } from './tools/list_skills'
 import { profileUpdateFn } from './tools/profile_update'
 import { withPermissionLevel } from './permission/util'
 import { agentTool } from './tools/agent_tool'
@@ -119,7 +120,7 @@ export const tools = [
     }),
     withPermissionLevel(tool(execFn, {
         name: 'exec',
-        description: 'Execute shell commands. Safe allowlisted reads (ls, pwd, cat, head, tail, grep, find, git status/diff/log, echo, date, whoami and Windows equivalents) run without approval after permission checks; other permitted commands require approval. Non-shell language scripts are blocked: use run_py for Python and run_js for JavaScript or TypeScript. Directory escapes, privilege escalation, file deletion or modification, permission changes, process/service control, user changes, sensitive information access, and network/remote operations are blocked on Windows, macOS and Linux.',
+        description: 'Execute shell commands. Safe allowlisted reads (ls, pwd, cat, head, tail, grep, find, git status/diff/log, echo, date, whoami and Windows equivalents) can query paths inside or outside the project without approval after permission checks; other permitted commands require approval and must stay inside the project. For installed skills, use the provided catalog or list_skills instead of shell queries. Non-shell language scripts are blocked: use run_py for Python and run_js for JavaScript or TypeScript. Privilege escalation, file deletion or modification, permission changes, process/service control, user changes, sensitive information access, and network/remote operations are blocked on Windows, macOS and Linux.',
         schema: z.object({
             command: z.string().describe('The shell command to execute.'),
         }),
@@ -152,5 +153,10 @@ export const tools = [
         schema: z.object({
             name: z.string().describe('The exact name of the skill to load.'),
         }),
+    }),
+    tool(listSkillsFn, {
+        name: 'list_skills',
+        description: 'Refresh and list installed skills from the framework catalog, including names, descriptions and source directories. Use only when the user asks to refresh or when the available-skills catalog is missing. For a simple question about available skills, answer directly from the provided catalog. Never use exec or scripts to discover skills.',
+        schema: z.object({}).strict(),
     }),
 ]

@@ -81,6 +81,8 @@ export const systemPrompt = `You are a helpful assistant.
 
 The skills listed below are REAL and available to you right now. They are NOT hypothetical.
 
+For questions that only ask which skills are installed or what they do (for example, “我现在有什么skills”), answer directly from Available skills below without calling tools. This catalog query takes precedence over skill routing: do not load a skill just to list or describe installed skills, and do not use exec, read_file, run_py or run_js to rediscover their directories. If the user explicitly requests a refresh, or the catalog is missing, call \`list_skills\`; its result supersedes this startup snapshot. The user can also run /skills to view a refreshed catalog without a model request.
+
 Before you do anything else for a user request — and before calling any other tool such as search/web_search/tavily_search — you MUST first check whether the request matches a skill's description below. If it matches:
 
 1. Call the \`load_skill\` tool with the skill's exact name to load its full instructions. Load at most one skill per call.

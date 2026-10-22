@@ -5,6 +5,7 @@ import {
     createChatCommandRegistry,
     formatRelativeTime,
 } from './chat-commands'
+import * as skillCatalog from './skills'
 
 describe('ChatCommandRegistry', () => {
     it('inspects server status and filters tools without entering the model', async () => {
@@ -49,17 +50,46 @@ describe('ChatCommandRegistry', () => {
         expect(writeLine).not.toHaveBeenCalled()
     })
 
+    it('lists refreshed skills and sources locally without changing the chat', async () => {
+        const listSkills = jest.fn(() => [{ name: 'demo', description: 'Demo skill', dirPath: '/skills/demo' }])
+        const registry = createRegistry({ listSkills })
+        const { context, writeLine, session } = createContext()
+        await expect(registry.dispatch('/skills', context)).resolves.toBe(true)
+        expect(listSkills).toHaveBeenCalledTimes(1)
+        expect(writeLine.mock.calls).toEqual([
+            ['Available skills: 1'], ['- demo: Demo skill'], ['  /skills/demo'],
+        ])
+        expect(session.threadId).toBe('initial-thread')
+        await registry.dispatch('/skills extra', context)
+        expect(listSkills).toHaveBeenCalledTimes(1)
+        expect(writeLine).toHaveBeenLastCalledWith('Usage: /skills', 'error')
+    })
+
+    it('uses framework discovery by default and handles an empty catalog', async () => {
+        const discover = jest.spyOn(skillCatalog, 'discoverSkills').mockReturnValue([])
+        try {
+            const registry = createRegistry()
+            const { context, writeLine } = createContext()
+            await registry.dispatch('/skills', context)
+            expect(discover).toHaveBeenCalledTimes(1)
+            expect(writeLine).toHaveBeenCalledWith('Available skills: 0')
+        } finally {
+            discover.mockRestore()
+        }
+    })
+
     it('suggests commands as a slash-command prefix is typed', () => {
         const registry = createRegistry()
 
         expect(registry.suggest('/').map(({ name }) => name)).toEqual([
+            'skills',
             'mcp',
             'new',
             'compact',
             'sessions',
             'rewind',
         ])
-        expect(registry.suggest('/S').map(({ name }) => name)).toEqual(['sessions'])
+        expect(registry.suggest('/S').map(({ name }) => name)).toEqual(['skills', 'sessions'])
         expect(registry.suggest('/re').map(({ name }) => name)).toEqual(['rewind'])
         expect(registry.suggest('/rewind ')).toEqual([])
         expect(registry.suggest('regular message')).toEqual([])
@@ -106,7 +136,7 @@ describe('ChatCommandRegistry', () => {
 
         await expect(registry.dispatch('/missing', context)).resolves.toBe(true)
         expect(writeLine).toHaveBeenCalledWith(
-            'Unknown command: /missing. Available commands: /mcp, /new, /compact, /sessions, /rewind',
+            'Unknown command: /missing. Available commands: /skills, /mcp, /new, /compact, /sessions, /rewind',
             'error',
         )
     })

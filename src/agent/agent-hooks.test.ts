@@ -157,7 +157,8 @@ it('reports hook-blocked calls without claiming they started execution', async (
         { ...config, context: { ...config.context, onToolEvent } })
     expect(first).not.toHaveBeenCalled()
     expect(onToolEvent.mock.calls.filter(([event]) => event.name === 'first_exec')).toEqual([
-        [expect.objectContaining({ type: 'result', status: 'blocked', content: 'hook denied' })],
+        [expect.objectContaining({ type: 'result', status: 'blocked', content: 'hook denied',
+            reason: { source: 'hook', code: 'hook_blocked', message: 'hook denied' } })],
     ])
 })
 

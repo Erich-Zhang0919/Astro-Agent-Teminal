@@ -62,6 +62,7 @@ import { MemoryHookContextStore } from './hooks'
 import { delegationPrompt, systemPrompt } from './prompt'
 import { tools } from './tools'
 import * as toolRegistry from './tools'
+import * as skillRegistry from './skills'
 import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -209,6 +210,8 @@ it('shares an MCP connection with the child, keeps it alive, and isolates anothe
 })
 
 it('isolates child input/tools/configuration and returns only the final answer before the parent continues', async () => {
+    const loadSkill = jest.spyOn(skillRegistry, 'loadSkill').mockImplementation(name =>
+        name === 'planner' ? '---\nname: planner\ndescription: Test planning skill\n---\nPlan the task.' : null)
     const id = parentId()
     const approve = jest.fn(async () => true)
     const preprocessMessages = jest.fn((messages: readonly BaseMessage[]) => [...messages,
@@ -272,6 +275,7 @@ it('isolates child input/tools/configuration and returns only the final answer b
     ])
     expect(childEvents.at(-1)).toMatchObject({ reason: 'ask_completed' })
     expect(onToolEvent.mock.calls.map(([event]) => [event.type, event.name])).toContainEqual(['start', 'load_skill'])
+    expect(loadSkill).toHaveBeenCalledWith('planner')
     expect(db.prepare('SELECT session_id FROM memory').all()).toEqual([{ session_id: childId }])
     expect(await checkpointer.getTuple({ configurable: { thread_id: childId } })).toBeUndefined()
     expect(db.prepare('SELECT * FROM hook_context WHERE session_id = ?').all(childId)).toEqual([])

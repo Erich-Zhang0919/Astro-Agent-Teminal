@@ -36,6 +36,19 @@ system's home directory. Startup creates the directory and database if missing
 and reuses the database on subsequent runs. Existing project-local `.data`
 databases are not migrated automatically.
 
+Skills are loaded from `~/.agents/skills`, `~/.astro/.agents/skills`, then
+`~/.astro/skills`, using the operating system's home directory on Windows, macOS
+and Linux. Missing directories are skipped. Each skill is a subdirectory with a
+`SKILL.md`; for duplicate frontmatter `name` values, the later directory replaces
+the earlier skill's description, path and content. Skills are loaded directly
+from these directories and are not bundled into the build.
+New skills must be created under `~/.astro/skills`.
+
+Use `/skills` to refresh and display installed skill names, descriptions and source
+directories directly, without a model request. Natural-language catalog questions
+use the available-skills list already supplied to the model; explicit refreshes
+use `list_skills`, which scans the same directories without shell commands.
+
 Context usage queries `<baseURL>/models` for the actual response model ID and
 reads `context_length` or `context_window` (input + output capacity). If metadata
 is missing or unavailable, documented DeepSeek, MiniMax, GLM, Qwen and MiMo
@@ -137,7 +150,14 @@ pnpm dev chat --hooks scripts/hooks.example.json
 
 Both `chat` and `ask` display a compact `[Tool] <name> called: <arguments>` line,
 including calls that do not require approval. Arguments are limited to 120 characters;
-tool results are not previewed. Failed and blocked calls show a short status line.
+tool results are not previewed. Failed calls show a short status line. Blocked
+calls include a bounded reason with its source and code, such as
+`[Tool] exec: Blocked [permission/dangerous_command]: ...`. API blocked events
+include `reason: { source, code, message }`; permission rules, Hook failures and
+user rejections have distinct sources. Reasons survive approval resumes.
+Allowlisted read-only shell queries may inspect paths outside the project;
+protected-path, mutation and other existing dangerous-command checks still apply.
+Other shell commands must remain within the project and require approval.
 After each script completes, its stdout and stderr are displayed as
 `[Hook <event>] <script output>`, including session hooks. Silent scripts display
 nothing, and configuration commands are not printed. Script output preserves

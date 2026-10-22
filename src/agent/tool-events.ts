@@ -1,3 +1,5 @@
+import type { ToolBlockReason } from './permission/util'
+
 interface ToolExecutionInfo {
     toolCallId?: string
     name: string
@@ -6,7 +8,8 @@ interface ToolExecutionInfo {
 
 export type ToolExecutionEvent = ToolExecutionInfo & (
     | { type: 'start' }
-    | { type: 'result'; status: 'success' | 'error' | 'blocked'; content: unknown }
+    | { type: 'result'; status: 'success' | 'error'; content: unknown }
+    | { type: 'result'; status: 'blocked'; content: unknown; reason: ToolBlockReason }
 )
 
 export type ToolEventCallback = (event: ToolExecutionEvent) => void | Promise<void>
