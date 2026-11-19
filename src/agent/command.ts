@@ -137,6 +137,7 @@ function printBanner(chatCommands: ChatCommandDefinition[]): void {
         .join(' ')
 
     console.log(chalk.cyan(figlet.textSync(displayName, { font: 'Standard' })))
+    console.log(chalk.bold.cyan('👋 欢迎回到 Astro！今天想一起完成什么？\n'))
 
     const pad = (label: string) => label.padEnd(INFO_LABEL_WIDTH)
     const indent = ' '.repeat(INFO_LABEL_WIDTH + 1)

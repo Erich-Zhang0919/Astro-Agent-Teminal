@@ -1,17 +1,20 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ChatOpenAI } from '@langchain/openai'
-import { createModels, loadModelConfiguration } from './model'
+const mockChatOpenAI = jest.fn()
+let createModels: typeof import('./model')['createModels']
 
 jest.mock('node:os', () => ({ ...jest.requireActual('node:os'), homedir: jest.fn() }))
-jest.mock('@langchain/openai', () => ({ ChatOpenAI: jest.fn() }))
+jest.mock('@langchain/openai', () => ({ ChatOpenAI: mockChatOpenAI }))
 
 let home: string
 let path: string
 beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'astro-model-'))
-    jest.mocked(homedir).mockReturnValue(home)
+    jest.isolateModules(() => {
+        require('node:os').homedir.mockReturnValue(home)
+        createModels = require('./model').createModels
+    })
     mkdirSync(join(home, '.astro'))
     path = join(home, '.astro', 'astro.json')
 })
@@ -29,6 +32,6 @@ it('uses the configured credentials and endpoint for both chat and compaction', 
         modelKwargs: { thinking: { type: 'disabled' } },
     }
     expect(models.config).toEqual(custom)
-    expect(ChatOpenAI).toHaveBeenNthCalledWith(1, { ...shared, streaming: true, streamUsage: true })
-    expect(ChatOpenAI).toHaveBeenNthCalledWith(2, { ...shared, streaming: false })
+    expect(mockChatOpenAI).toHaveBeenNthCalledWith(1, { ...shared, streaming: true, streamUsage: true })
+    expect(mockChatOpenAI).toHaveBeenNthCalledWith(2, { ...shared, streaming: false })
 })

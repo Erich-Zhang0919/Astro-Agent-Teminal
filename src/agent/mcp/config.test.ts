@@ -1,7 +1,8 @@
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { loadMcpConfiguration, resolveMcpEnvironment } from './config'
+let loadMcpConfiguration: typeof import('./config')['loadMcpConfiguration']
+let resolveMcpEnvironment: typeof import('./config')['resolveMcpEnvironment']
 
 jest.mock('node:os', () => ({ ...jest.requireActual('node:os'), homedir: jest.fn() }))
 
@@ -11,7 +12,10 @@ let configurationPath: string
 beforeEach(async () => {
     cwd = await mkdtemp(join(tmpdir(), 'astro-mcp-config-'))
     home = join(cwd, 'home')
-    jest.mocked(homedir).mockReturnValue(home)
+    jest.isolateModules(() => {
+        require('node:os').homedir.mockReturnValue(home)
+        ;({ loadMcpConfiguration, resolveMcpEnvironment } = require('./config'))
+    })
     await mkdir(join(home, '.astro'), { recursive: true })
     configurationPath = join(home, '.astro', 'astro.json')
 })

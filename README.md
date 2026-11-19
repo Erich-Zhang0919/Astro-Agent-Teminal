@@ -8,17 +8,38 @@ Node.js + TypeScript development environment using pnpm and Jest.
 pnpm install
 ```
 
-Create `~/.astro/astro.json` in your user home directory before starting Astro:
+Run `astro chat` after installing the npm package (or `pnpm dev chat` when developing).
+If `~/.astro/astro.json` does not exist, Astro performs first-run setup before
+loading the agent:
+
+1. Initialize `~/.astro/.data/checkpointer.db`.
+2. Download the complete `find-skills` directory from `vercel-labs/skills` and
+   `skill-creator` from `anthropics/skills` into `~/.astro/.agents/skills`.
+3. Create `~/.astro/astro.json` with empty API keys, display its path and exit.
+
+Setup welcomes you with emoji and an animated status line for each step, including
+the current file and download count. Completed steps stay visible; redirected
+output uses static summaries without terminal animations or per-file noise.
+Development commands suppress pnpm's script header and dotenv's injection notice.
+Setup requires access to
+GitHub's API and raw file downloads, and uses Node.js without requiring Git or
+platform-specific shell commands. If a step fails, no configuration file is
+created; rerun the command to retry. Completed skills and existing database data
+are preserved. Once the configuration exists, startup skips this setup.
+
+Edit the generated configuration, then rerun `astro chat` (or your original
+command). See the [configuration reference](https://zhitalk.chat/#config) for
+model and Tavily settings. The generated template is:
 
 ```json
 {
   "model": {
     "model": "kimi-k2.6",
-    "apiKey": "your_moonshot_api_key_here",
+    "apiKey": "",
     "baseURL": "https://api.moonshot.cn/v1"
   },
   "env": {
-    "TAVILY_API_KEY": "your_tavily_api_key_here"
+    "TAVILY_API_KEY": ""
   }
 }
 ```
