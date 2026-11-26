@@ -8,7 +8,14 @@ Node.js + TypeScript development environment using pnpm and Jest.
 pnpm install
 ```
 
-Run `astro` after installing the npm package (or `pnpm dev` when developing).
+Install the CLI globally with npm.
+
+```sh
+npm install -g astro-agent-cli
+astro
+```
+
+Use `pnpm dev` when developing.
 Running `astro` with no arguments starts the same interactive session as `astro chat`.
 If `~/.astro/astro.json` does not exist, Astro performs first-run setup before
 loading the agent:

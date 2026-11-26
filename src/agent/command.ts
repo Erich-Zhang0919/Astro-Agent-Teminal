@@ -141,12 +141,7 @@ function wrapText(text: string, width: number): string[] {
 }
 
 function printBanner(chatCommands: ChatCommandDefinition[]): void {
-    const displayName = pkg.name
-        .split(/[-_]/)
-        .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-        .join(' ')
-
-    console.log(chalk.cyan(figlet.textSync(displayName, { font: 'Standard' })))
+    console.log(chalk.cyan(figlet.textSync('Astro', { font: 'Standard' })))
     console.log(chalk.bold.cyan('👋 欢迎回到 Astro！今天想一起完成什么？\n'))
 
     const pad = (label: string) => label.padEnd(INFO_LABEL_WIDTH)

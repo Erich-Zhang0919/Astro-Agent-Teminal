@@ -1,5 +1,5 @@
 {
-  "name": "astro",
+  "name": "astro-agent-cli",
   "version": "1.0.0",
   "description": "A personal AI agent that can help you with various tasks, such as writing code, generating content, and more.",
   "author": "Hastings Zhang",
