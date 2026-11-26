@@ -46,7 +46,7 @@ function configurationHelp(path: string, title: string, details: string[]): stri
         '',
         ...details,
         '',
-        '📖 配置参考：https://xxxx/#config',
+        '📖 配置参考：https://astro-aiagent.vercel.app/docs/',
         '💬 保存配置后，请重新运行 astro chat（或原命令）。',
     ].join('\n')
 }

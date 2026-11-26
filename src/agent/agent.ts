@@ -40,6 +40,7 @@ export interface RunAgentOptions {
 }
 
 const { config: modelConfig, model, compactionModel } = createModels()
+export const configuredModelId = modelConfig.model
 
 // ── Agent & Memory ────────────────────────────────────────────
 function createRuntime(isSubAgent: boolean, inheritedHooks?: HookEngine, inheritedMcp?: McpManager) {

@@ -1,10 +1,10 @@
 import { Command } from 'commander'
 import { randomUUID } from 'node:crypto'
-import { createInterface, emitKeypressEvents } from 'readline'
+import { createInterface } from 'readline'
 import chalk from 'chalk'
 import figlet from 'figlet'
 import boxen from 'boxen'
-import { compactAgentContext, endAgentSession, getMcpSessionStatus, runAgentStream, startAgentSession } from './agent'
+import { compactAgentContext, configuredModelId, endAgentSession, getMcpSessionStatus, runAgentStream, startAgentSession } from './agent'
 import {
     ChatCommandContext,
     ChatCommandDefinition,
@@ -12,7 +12,7 @@ import {
     runContextCompaction,
 } from './chat-commands'
 import { sessionStore } from './session-store'
-import { promptWithSuggestions } from './chat-prompt'
+import { openChatTerminal } from './chat-terminal'
 import { AgentRunResult, formatContextUsage, shouldAutoCompact, shouldWarnContextUsage } from './context-usage'
 import { requestToolApproval } from './tool-approval'
 import { createAgentDisplay } from './tool-display'
@@ -94,20 +94,30 @@ function readConfirmationLine(question: string): Promise<string | undefined> {
 const INFO_LABEL_WIDTH = 'Description'.length
 const INFO_VALUE_WIDTH = 50
 
-async function reportContextUsage(result: AgentRunResult, threadId: string): Promise<void> {
-    process.stdout.write(`\n${chalk.dim(formatContextUsage(result))}`)
+async function reportContextUsage(
+    result: AgentRunResult,
+    threadId: string,
+    terminal?: ReturnType<typeof openChatTerminal>,
+): Promise<void> {
+    const usage = formatContextUsage(result)
+    if (terminal) terminal.setContext(usage)
+    else process.stdout.write(`\n${chalk.dim(usage)}`)
     if (shouldWarnContextUsage(result)) {
-        process.stdout.write('\n' + chalk.yellow(
-            `[Tips]当前上下文即将达到上限，建议使用 ${chalk.bold('/new')} 开启新会话，` +
-            `或使用 ${chalk.bold('/compact')} 压缩上下文。`,
-        ))
+        const warning = `[Tips]当前上下文即将达到上限，建议使用 ${chalk.bold('/new')} 开启新会话，` +
+            `或使用 ${chalk.bold('/compact')} 压缩上下文。`
+        if (terminal) terminal.write(warning, 'warning')
+        else process.stdout.write('\n' + chalk.yellow(warning))
     }
     if (shouldAutoCompact(result)) {
-        process.stdout.write('\n')
+        if (terminal) terminal.setActivity('Compacting context')
+        else process.stdout.write('\n')
         await runContextCompaction(
             threadId,
             compactAgentContext,
-            (message, level) => console.log(level === 'error' ? chalk.red(message) : chalk.cyan(message)),
+            (message, level) => {
+                if (terminal) terminal.write(message, level)
+                else console.log(level === 'error' ? chalk.red(message) : chalk.cyan(message))
+            },
             'Context usage reached 90%. Starting automatic compaction…',
         )
     }
@@ -180,9 +190,6 @@ function printBanner(chatCommands: ChatCommandDefinition[]): void {
 
 async function startInteractiveChat(opts: { hooks?: string; mcpConfig?: string }): Promise<void> {
     const session = { threadId: randomUUID() }
-    const display = createAgentDisplay(text => { process.stdout.write(text) })
-    const hookOptions = sessionHookOptions(opts.hooks, display.onHookEvent, opts.mcpConfig)
-    await startAgentSession(session.threadId, { ...hookOptions, reason: 'startup' })
     const chatCommands = createChatCommandRegistry({
         listRecentSessions: (limit) => sessionStore.listRecentSessions(limit),
         sessionExists: (threadId) => sessionStore.hasSession(threadId),
@@ -199,122 +206,140 @@ async function startInteractiveChat(opts: { hooks?: string; mcpConfig?: string }
             }
         },
     })
+    const richTerminal = process.stdin.isTTY && process.stdout.isTTY && process.env.TERM !== 'dumb'
+    const terminal = richTerminal ? openChatTerminal(chatCommands, pkg.version, configuredModelId) : undefined
+    const display = createAgentDisplay(text => { process.stdout.write(text) }, terminal && {
+        startReply: terminal.startReply,
+        appendReply: terminal.appendReply,
+        finishReply: terminal.finishReply,
+        notice: terminal.write,
+    })
+    const hookOptions = sessionHookOptions(opts.hooks, display.onHookEvent, opts.mcpConfig)
+    if (terminal) {
+        hookOptions.onMcpDiagnostic = (message) => terminal.write(message)
+        hookOptions.onHookDiagnostic = (message) => terminal.write(message, 'error')
+    }
     const commandContext: ChatCommandContext = {
         session,
         writeLine: (message, level = 'info') => {
-            console.log(level === 'error' ? chalk.red(message) : chalk.cyan(message))
+            if (terminal) terminal.write(message, level)
+            else console.log(level === 'error' ? chalk.red(message) : chalk.cyan(message))
         },
     }
-    const isTTY = Boolean(process.stdin.isTTY)
-    const fallbackInterface = isTTY
-        ? undefined
-        : createInterface({ input: process.stdin, output: process.stdout })
+
+    let fallbackInterface: ReturnType<typeof createInterface> | undefined
     let inputClosed = false
-    fallbackInterface?.once('close', () => { inputClosed = true })
-    const prompt = () => isTTY
-        ? promptWithSuggestions(chatCommands)
-        : new Promise<string>((resolve) => {
-            if (inputClosed) return resolve('exit')
-            const onClose = () => resolve('exit')
-            fallbackInterface?.once('close', onClose)
-            fallbackInterface?.question('You: ', (answer) => {
-                fallbackInterface.off('close', onClose)
-                resolve(answer)
-            })
+    const readFallbackLine = (question: string) => new Promise<string | undefined>((resolve) => {
+        if (inputClosed) return resolve(undefined)
+        const onClose = () => resolve(undefined)
+        fallbackInterface?.once('close', onClose)
+        fallbackInterface?.question(question, (answer) => {
+            fallbackInterface?.off('close', onClose)
+            resolve(answer)
         })
+    })
 
-    if (isTTY) emitKeypressEvents(process.stdin)
-
-    printBanner(chatCommands.list())
-
+    let started = false
     let completed = false
     try {
+        terminal?.setActivity('Opening session')
+        await startAgentSession(session.threadId, { ...hookOptions, reason: 'startup' })
+        started = true
+        if (!terminal) {
+            fallbackInterface = createInterface({ input: process.stdin, output: process.stdout })
+            fallbackInterface.once('close', () => { inputClosed = true })
+            printBanner(chatCommands.list())
+        }
+
         while (true) {
-            const input = await prompt()
+            const answer = terminal ? await terminal.readInput() : await readFallbackLine('You: ')
+            const input = answer ?? 'exit'
             if (!input.trim()) continue
-            if (isTTY) process.stdout.write(`${chalk.green.bold('You: ')}${input}\n`)
             if (input.trim().toLowerCase() === 'exit') {
-                console.log(chalk.gray('Goodbye!'))
+                if (terminal) {
+                    terminal.setActivity(undefined)
+                    terminal.write('Goodbye!')
+                } else console.log(chalk.gray('Goodbye!'))
                 completed = true
                 break
             }
-            if (await chatCommands.dispatch(input, commandContext)) {
-                continue
-            }
-
-            fallbackInterface?.pause()
-
-            const controller = new AbortController()
-
-            const onKeypress = (_str: string | undefined, key: { name: string }) => {
-                if (key?.name === 'escape') {
-                    controller.abort()
+            terminal?.write(input, 'user')
+            if (input.trimStart().startsWith('/')) {
+                terminal?.setActivity('Running command')
+                const previousThreadId = session.threadId
+                if (await chatCommands.dispatch(input, commandContext)) {
+                    if (previousThreadId !== session.threadId) terminal?.setContext(undefined)
+                    continue
                 }
             }
 
-            if (isTTY) {
-                process.stdin.setRawMode(true)
-                process.stdin.resume()
-                process.stdin.on('keypress', onKeypress)
+            fallbackInterface?.pause()
+            const controller = new AbortController()
+            const cancel = () => {
+                if (controller.signal.aborted) return
+                controller.abort()
+                terminal?.setActivity('Cancelling request', cancel)
             }
-
-            process.stdout.write(chalk.dim('\n(Press ESC to cancel)\n'))
-
+            terminal?.setActivity('Waiting for Astro', cancel)
+            let replying = false
+            if (!terminal) process.stdout.write('\n')
             try {
                 const result = await runAgentStream(
                     input,
-                    display.onToken,
+                    (token) => {
+                        if (controller.signal.aborted) return
+                        if (!replying) {
+                            replying = true
+                            terminal?.setActivity('Astro is replying', cancel)
+                        }
+                        display.onToken(token)
+                    },
                     session.threadId,
                     controller.signal,
                     {
                         ...hookOptions,
                         onToolEvent: display.onToolEvent,
                         confirmTool: async (request) => {
-                            if (isTTY) {
-                                process.stdin.off('keypress', onKeypress)
-                                process.stdin.setRawMode(false)
-                            }
-                            try {
-                                return await requestToolApproval(request, {
-                                    interactive: isTTY,
-                                    readAnswer: readConfirmationLine,
-                                    write: (text) => process.stdout.write(text),
-                                })
-                            } finally {
-                                if (isTTY) {
-                                    process.stdin.setRawMode(true)
-                                    process.stdin.resume()
-                                    process.stdin.on('keypress', onKeypress)
-                                }
-                            }
+                            if (controller.signal.aborted) return false
+                            display.finishReply()
+                            return requestToolApproval(request, {
+                                interactive: Boolean(process.stdin.isTTY),
+                                readAnswer: terminal?.readApproval ?? readFallbackLine,
+                                write: (text) => {
+                                    if (terminal) terminal.write(text)
+                                    else process.stdout.write(text)
+                                },
+                            })
                         },
                     },
                 )
-                if (controller.signal.aborted) {
-                    process.stdout.write(chalk.yellow('\n[Cancelled]'))
-                } else {
-                    display.finishReply()
-                    await reportContextUsage(result, session.threadId)
+                display.finishReply()
+                if (!controller.signal.aborted) {
+                    terminal?.completeTurn()
+                    await reportContextUsage(result, session.threadId, terminal)
                 }
             } catch (err) {
+                display.finishReply()
                 if (!controller.signal.aborted) {
-                    console.error(chalk.red.bold('\nError:'), chalk.red((err as Error).message))
-                } else {
-                    process.stdout.write(chalk.yellow('\n[Cancelled]'))
+                    const message = err instanceof Error ? err.message : String(err)
+                    if (terminal) terminal.write(`Error: ${message}`, 'error')
+                    else console.error(chalk.red.bold('\nError:'), chalk.red(message))
                 }
             } finally {
-                display.finishReply()
-                if (isTTY) {
-                    process.stdin.off('keypress', onKeypress)
-                    process.stdin.setRawMode(false)
+                if (controller.signal.aborted) {
+                    if (terminal) terminal.write('[Cancelled]', 'warning')
+                    else process.stdout.write(chalk.yellow('\n[Cancelled]'))
                 }
+                if (!terminal) process.stdout.write('\n\n')
+                fallbackInterface?.resume()
             }
-
-            process.stdout.write('\n\n')
-            fallbackInterface?.resume()
         }
     } finally {
         fallbackInterface?.close()
-        await endAgentSession(session.threadId, completed ? 'exit' : 'error')
+        try {
+            if (started) await endAgentSession(session.threadId, completed ? 'exit' : 'error')
+        } finally {
+            terminal?.close()
+        }
     }
 }

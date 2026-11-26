@@ -187,7 +187,7 @@ export async function installIfNeeded(): Promise<boolean> {
         console.log(chalk.bold.green('\n🎉 工作空间已准备好，再完成一点配置就能开始！'))
         console.log(`\n📝 请编辑配置文件：${chalk.cyan(CONFIG_PATH)}`)
         console.log('   填写 model 中的模型名称、API Key、baseURL，以及 env.TAVILY_API_KEY。')
-        console.log(`📖 配置参考：${chalk.cyan('https://zhitalk.chat/#config')}`)
+        console.log(`📖 配置参考：${chalk.cyan('https://astro-aiagent.vercel.app/docs/')}`)
         console.log(`💬 保存配置后，请重新运行 ${chalk.bold('astro chat')}（或原命令）。\n`)
         return true
     } catch (error) {
