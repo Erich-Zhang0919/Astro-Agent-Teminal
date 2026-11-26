@@ -8,7 +8,8 @@ Node.js + TypeScript development environment using pnpm and Jest.
 pnpm install
 ```
 
-Run `astro chat` after installing the npm package (or `pnpm dev chat` when developing).
+Run `astro` after installing the npm package (or `pnpm dev` when developing).
+Running `astro` with no arguments starts the same interactive session as `astro chat`.
 If `~/.astro/astro.json` does not exist, Astro performs first-run setup before
 loading the agent:
 
@@ -27,7 +28,7 @@ platform-specific shell commands. If a step fails, no configuration file is
 created; rerun the command to retry. Completed skills and existing database data
 are preserved. Once the configuration exists, startup skips this setup.
 
-Edit the generated configuration, then rerun `astro chat` (or your original
+Edit the generated configuration, then rerun `astro` (or your original
 command). See the [configuration reference](https://zhitalk.chat/#config) for
 model and Tavily settings. The generated template is:
 

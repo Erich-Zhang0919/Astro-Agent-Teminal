@@ -5,5 +5,6 @@ export async function runCli(argv: string[]): Promise<void> {
     if (await installIfNeeded()) return
     validateStartupConfiguration()
     const { buildProgram } = await import('./command')
-    await buildProgram().parseAsync(argv)
+    const commandArgv = argv.length === 2 ? [...argv, 'chat'] : argv
+    await buildProgram().parseAsync(commandArgv)
 }

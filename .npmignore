@@ -1,0 +1,25 @@
+# Local configuration and data
+.env
+.env.*
+/.agents/
+/.claude/
+/.data/
+/data/
+/tool_output/
+/mcp.json
+
+# Development files
+/src/
+/scripts/
+/tests/
+/coverage/
+/docs/
+/.pnpm-store/
+/jest.config.cjs
+/tsconfig*.json
+/polyfill.cjs
+/CLAUDE.md
+/skills-lock.json
+/Ethereum Whitepaper.pdf
+*.log
+*.tgz

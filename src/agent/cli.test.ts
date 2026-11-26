@@ -13,15 +13,27 @@ jest.mock('./command', () => {
 
 it('finishes first-run setup before loading the agent or parsing commands', async () => {
     jest.mocked(installIfNeeded).mockResolvedValue(true)
-    await runCli(['node', 'astro', 'chat'])
+    await runCli(['node', 'astro'])
     expect(mockLoadCommand).not.toHaveBeenCalled()
     expect(mockParse).not.toHaveBeenCalled()
     expect(validateStartupConfiguration).not.toHaveBeenCalled()
 })
 
-it('runs the original command when the configuration exists', async () => {
+it('starts chat when invoked without arguments', async () => {
     jest.mocked(installIfNeeded).mockResolvedValue(false)
-    const argv = ['node', 'astro', 'ask', 'hello']
+    await runCli(['node', 'astro'])
+    expect(validateStartupConfiguration).toHaveBeenCalledTimes(1)
+    expect(mockParse).toHaveBeenCalledWith(['node', 'astro', 'chat'])
+})
+
+it.each([
+    { args: ['ask', 'hello'] },
+    { args: ['chat'] },
+    { args: ['--help'] },
+    { args: ['--version'] },
+])('passes explicit arguments $args through to Commander', async ({ args }) => {
+    jest.mocked(installIfNeeded).mockResolvedValue(false)
+    const argv = ['node', 'astro', ...args]
     await runCli(argv)
     expect(validateStartupConfiguration).toHaveBeenCalledTimes(1)
     expect(mockParse).toHaveBeenCalledWith(argv)
