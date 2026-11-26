@@ -107,7 +107,7 @@ it('prints welcome and step summaries without per-file noise, followed by config
     expect(output).toContain('[3/3] 配置文件创建完成')
     expect(output).toContain('🎉 工作空间已准备好')
     expect(output).toContain(config.CONFIG_PATH)
-    expect(output).toContain('https://zhitalk.chat/#config')
+    expect(output).toContain('https://astro-aiagent.vercel.app/docs/')
     expect(output).toContain('重新运行 astro chat')
 })
 

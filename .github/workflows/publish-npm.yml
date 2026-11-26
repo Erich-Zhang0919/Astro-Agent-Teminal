@@ -1,0 +1,107 @@
+name: Publish to npm
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: publish-npm
+  queue: max
+
+jobs:
+  check-merge:
+    if: github.event.deleted == false
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      merged: ${{ steps.pull-request.outputs.result }}
+    steps:
+      - id: pull-request
+        uses: actions/github-script@v8
+        with:
+          retries: 3
+          script: |
+            for (let attempt = 0; attempt < 3; attempt++) {
+              const pulls = await github.paginate(
+                'GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls',
+                { ...context.repo, commit_sha: context.sha, per_page: 100 }
+              )
+              if (pulls.some(pr => pr.merged_at && pr.base.ref === 'main'
+                && pr.merge_commit_sha === context.sha)) return true
+
+              // The pull request association can lag behind the push event.
+              if (attempt < 2) await new Promise(resolve => setTimeout(resolve, 2000 * (attempt + 1)))
+            }
+            core.notice('The main commit does not match a merged pull request. Skipping publish.')
+            return false
+
+  publish:
+    needs: check-merge
+    if: needs.check-merge.outputs.merged == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: https://registry.npmjs.org/
+          package-manager-cache: false
+      - uses: pnpm/action-setup@v6
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm test
+
+      - name: Set release version
+        id: release
+        shell: bash
+        run: |
+          release_version=$(node --input-type=module - "$(git rev-parse HEAD)" <<'NODE'
+          import { readFileSync } from 'node:fs'
+
+          const manifest = JSON.parse(readFileSync('package.json', 'utf8'))
+          const registry = 'https://registry.npmjs.org/'
+          const response = await fetch(registry + encodeURIComponent(manifest.name), {
+            headers: { Accept: 'application/json' },
+            signal: AbortSignal.timeout(30_000),
+          })
+          if (!response.ok) throw new Error('Could not read npm releases (HTTP ' + response.status + ')')
+          const { versions } = await response.json()
+          if (Object.values(versions).some(release => release.gitHead === process.argv[2])) process.exit(0)
+
+          const parseVersion = version => /^\d+\.\d+\.\d+$/.test(version)
+            ? version.split('.').map(Number)
+            : undefined
+          const compare = (a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]
+          const current = parseVersion(manifest.version)
+          if (!current) throw new Error('Use a major.minor.patch package version to publish to latest.')
+
+          const latest = Object.keys(versions).map(parseVersion).filter(Boolean).sort(compare).at(-1)
+          const version = latest && compare(current, latest) <= 0
+            ? [latest[0], latest[1], latest[2] + 1]
+            : current
+          console.log(version.join('.'))
+          NODE
+          )
+          if [ -z "$release_version" ]; then
+            echo 'This commit is already published.'
+            exit 0
+          fi
+          npm version "$release_version" --no-git-tag-version --allow-same-version --ignore-scripts
+          echo "version=$release_version" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        if: steps.release.outputs.version != ''
+        run: pnpm build
+
+      - name: Publish
+        if: steps.release.outputs.version != ''
+        run: npm publish --access public

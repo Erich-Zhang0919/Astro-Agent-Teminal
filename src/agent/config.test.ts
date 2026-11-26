@@ -57,7 +57,7 @@ it('lists both empty keys from the installer template with actionable Chinese gu
     expect(message).not.toContain('• model.model')
     expect(message).not.toContain('• model.baseURL')
     expect(message).toContain(path)
-    expect(message).toContain('https://xxxx/#config')
+    expect(message).toContain('https://astro-aiagent.vercel.app/docs/')
     expect(message).toContain('保存配置后，请重新运行 astro chat（或原命令）')
 })
 

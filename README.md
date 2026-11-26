@@ -36,7 +36,7 @@ created; rerun the command to retry. Completed skills and existing database data
 are preserved. Once the configuration exists, startup skips this setup.
 
 Edit the generated configuration, then rerun `astro` (or your original
-command). See the [configuration reference](https://zhitalk.chat/#config) for
+command). See the [configuration reference](https://astro-aiagent.vercel.app/docs/) for
 model and Tavily settings. The generated template is:
 
 ```json
@@ -96,6 +96,20 @@ retired model is still available.
 - `pnpm typecheck`: run TypeScript checks without emitting files.
 - `pnpm test`: run Jest unit tests.
 - `pnpm test:watch`: run Jest in watch mode.
+
+## npm releases
+
+The workflow in `.github/workflows/publish-npm.yml` runs when a pull request is
+merged into `main`. It installs from the pnpm lockfile, runs the tests, builds
+the CLI and publishes to npm. If the version in `package.json` is already at or
+below the latest stable release, the workflow increments the published patch
+version. A higher version in `package.json` takes precedence. Version changes
+take place in the workflow checkout.
+
+In the `astro-agent-cli` package settings on npm, configure a GitHub Actions
+trusted publisher for `Erich-Zhang0919/Astro-Agent-Teminal` with workflow filename
+`publish-npm.yml`, leave the environment blank, and allow direct publishing with
+`npm publish`. [npm Trusted Publishing documentation](https://docs.npmjs.com/trusted-publishers/)
 
 ## Unit Test Flow
 

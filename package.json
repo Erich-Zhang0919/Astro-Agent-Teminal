@@ -4,6 +4,10 @@
   "description": "A personal AI agent that can help you with various tasks, such as writing code, generating content, and more.",
   "author": "Hastings Zhang",
   "docs": "www.astroagent.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Erich-Zhang0919/Astro-Agent-Teminal.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
